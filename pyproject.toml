@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cloudhpc-mcp"
-version = "0.1.1"
+version = "0.1.0"
 description = "MCP server for cloudHPC: upload cases, launch and monitor simulations, download results"
 readme = "README.md"
 license = "Apache-2.0"

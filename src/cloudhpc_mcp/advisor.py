@@ -102,6 +102,8 @@ def inspect_fds(path: str) -> dict[str, Any]:
         "mpi_groups": len(groups),
         "cells_per_group": sorted(groups.values()),
         "uses_mult_id": uses_mult,
+        "slow_devc_on_amd": sorted({q.upper() for q in re.findall(
+            r"QUANTITY\s*=\s*'(VISIBILITY|RADIATIVE HEAT FLUX|GAUGE HEAT FLUX GAS)'", text, re.IGNORECASE)}),
     }
 
 
@@ -344,8 +346,10 @@ def _suggest(family: str,
             notes.append("RAM: start on highcpu (cheapest). If the run fails with a memory "
                          "error, relaunch on standard, then highmem. More RAM does not speed "
                          "up the run.")
-            notes.append("If some DEVC use GAUGE HEAT FLUX GAS, RADIATIVE HEAT FLUX or "
-                         "VISIBILITY and delivery time matters, prefer hypercpu/hypercore.")
+            if fds.get("slow_devc_on_amd"):
+                notes.append(f"The case has DEVC with {', '.join(fds['slow_devc_on_amd'])}: they "
+                             "slow down AMD CPUs, so if delivery time matters prefer "
+                             "hypercpu/hypercore (Intel).")
         return {"family": family, "cpu": cpu, "ram": ram, "ideal_cpu": needed,
                 "notes": notes, "warnings": warnings}
 

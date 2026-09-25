@@ -10,3 +10,4 @@ e2e_results/
 *.egg-info/
 dist/
 build/
+.venv-release/

@@ -23,7 +23,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from . import advisor, errors, files
-from .client import ACTIVE_STATUSES, STATUS, CloudHPCClient, CloudHPCError
+from .client import ACTIVE_STATUSES, REQUEST_LOG, STARTED_AT, STATUS, CloudHPCClient, CloudHPCError
 
 MODE = os.environ.get("CLOUDHPC_MCP_MODE", "local").lower()  # local | remote
 LOCAL = MODE == "local"
@@ -63,7 +63,8 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
 
 Storage files are deleted automatically after 60 days: remind the user to
 download results. Avoid needless calls: the API is rate limited
-(100 calls/hour on free accounts, 500 on full accounts).
+(100 calls/hour on free accounts, 500 on full accounts; no daily limit).
+Simulation costs are in euro and known only after the run.
 """
 
 mcp = FastMCP(
@@ -126,8 +127,16 @@ def _sim_summary(s: dict) -> dict:
         "submitted": s.get("idate") or None,
         "ended": s.get("edate") or None,
         "cpu_hours": s.get("cpu_hrs") or None,
-        "cost": s.get("cost") or None,
+        "cost_eur": _eur(s.get("cost")),
     }
+
+
+def _eur(value: Any) -> str | None:
+    """cloudHPC costs are always in euro."""
+    try:
+        return f"€{float(value):.2f}" if float(value) >= 1 else f"€{float(value):.3f}"
+    except (TypeError, ValueError):
+        return None
 
 
 def _storage_item(i: dict) -> dict:
@@ -365,7 +374,9 @@ async def launch_simulation(
     confirm: bool = False,
     ctx: Context = None,
 ) -> dict:
-    """Launch a simulation on a case folder already in storage. Costs money.
+    """Launch a simulation on a case folder already in storage. Costs money:
+    billed per vCPU-hour; the price is not available through the API, so do not
+    promise a cost estimate (the actual cost appears in get_simulation after the run).
 
     solver: exact script name from list_solvers (e.g. "fds6.9.1").
     cpu / ram: from suggest_resources or list_machine_options.
@@ -408,7 +419,8 @@ async def launch_simulation(
                f"{', regular instance' if regular_instance else ', preemptible'}) "
                f"using storage folder '{folder}'"
                f"{f' with mesh from {mesh_folder}' if mesh_folder else ''}. "
-               "Billed per vCPU-hour until the run ends or is stopped.")
+               "Billed per vCPU-hour until the run ends or is stopped; the actual cost is "
+               "shown when the run ends.")
     if not confirm:
         return {"confirmation_required": True, "summary": summary}
     try:
@@ -565,13 +577,26 @@ async def open_remote_desktop(simulation_id: int, ctx: Context = None) -> dict:
 
 @mcp.tool(annotations=READ)
 async def api_usage(ctx: Context = None) -> dict:
-    """Show the API rate limits and how many calls have been used."""
+    """Show the API rate limits and how many API requests have been made.
+
+    rate_limits: as reported by cloudHPC (hourly/daily window, whole account).
+    this_session (local mode): exact count of API requests made by this MCP
+    server since it started, by endpoint. File transfers through temporary
+    links are not API requests and are not counted.
+    """
     c = client_for(ctx)
     try:
         await c.ram_options()  # cheap call to read the rate-limit headers
     except CloudHPCError as e:
         return _err(e)
-    return c.rate.as_dict()
+    out: dict[str, Any] = {"rate_limits": c.rate.as_dict()}
+    if LOCAL:
+        out["this_session"] = {
+            "since_minutes": round((time.time() - STARTED_AT) / 60, 1),
+            "api_requests": sum(REQUEST_LOG.values()),
+            "by_endpoint": dict(REQUEST_LOG.most_common()),
+        }
+    return out
 
 
 # ---------------------------------------------------- local-only tools

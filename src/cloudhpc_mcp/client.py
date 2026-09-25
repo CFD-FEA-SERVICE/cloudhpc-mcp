@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +33,16 @@ UPLOAD_CONTENT_TYPE = "application/octet-stream"
 API_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 TRANSFER_TIMEOUT = httpx.Timeout(3600.0, connect=30.0)
 MAX_PAGES = 50  # safety cap for paginated listings
+
+
+# Requests made by this server process (meaningful in local mode, where one
+# process serves one user). Keys are endpoint templates, e.g. "GET /simulation/view-short/{id}".
+REQUEST_LOG: Counter = Counter()
+STARTED_AT = time.time()
+
+
+def _endpoint_template(method: str, path: str) -> str:
+    return f"{method} " + re.sub(r"/\d+(?=/|$)", "/{n}", path)
 
 
 class CloudHPCError(Exception):
@@ -76,8 +89,11 @@ class RateLimit:
                 return {"limit": "unlimited", "used": used}
             return {"limit": limit, "used": used, "remaining": max(limit - (used or 0), 0)}
 
-        return {"hourly": fmt(self.hourly_limit, self.hourly_used),
-                "daily": fmt(self.daily_limit, self.daily_used)}
+        out = {"hourly": fmt(self.hourly_limit, self.hourly_used)}
+        # cloudHPC limits are hourly; show the daily window only if a limit is set
+        if self.daily_limit:
+            out["daily"] = fmt(self.daily_limit, self.daily_used)
+        return out
 
 
 @dataclass
@@ -115,6 +131,7 @@ class CloudHPCClient:
             raise CloudHPCError(f"Cannot reach cloudHPC API: {e}") from e
 
         self.rate.update(r.headers)
+        REQUEST_LOG[_endpoint_template(method, path)] += 1
 
         try:
             data = r.json()

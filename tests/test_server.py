@@ -146,7 +146,7 @@ async def test_rate_limit_tracking_and_block():
     c = CloudHPCClient(api_key="good", api_url=API, transport=httpx.MockTransport(FakeAPI()))
     await c.cpu_options()
     assert c.rate.as_dict()["hourly"]["remaining"] == 95
-    assert c.rate.as_dict()["daily"]["limit"] == "unlimited"
+    assert "daily" not in c.rate.as_dict()
     c.rate.hourly_used = 100
     with pytest.raises(CloudHPCError, match="rate limit"):
         await c.cpu_options()
@@ -259,8 +259,16 @@ async def test_links(api):
 
 
 async def test_api_usage(api):
+    from cloudhpc_mcp.client import REQUEST_LOG
+    REQUEST_LOG.clear()
+    await server.get_simulation(10030)
+    await server.get_simulation(10029)
     r = await server.api_usage()
-    assert r["hourly"]["limit"] == 100
+    assert r["rate_limits"]["hourly"]["limit"] == 100
+    assert "daily" not in r["rate_limits"]      # daily limit 0 = no daily limit
+    s = r["this_session"]
+    assert s["api_requests"] == 3
+    assert s["by_endpoint"]["GET /simulation/view-short/{n}"] == 2
 
 
 # ------------------------------------------------------------- local tools
@@ -508,3 +516,23 @@ def test_fds_success_marker():
                              "output": " Starting FDS ...\n Time Step: 5"})
     assert bad["solver_finished_ok"] is False and "did not print" in bad["warning"]
     assert "solver_finished_ok" not in server._diagnosis({"script": "fds6.11.1", "status": 10, "output": ""})
+
+
+def test_devc_note_only_when_present(tmp_path):
+    base = "&MESH IJK=30,30,30, XB=0,1,0,1,0,1 /\n&MESH IJK=30,30,30, XB=1,2,0,1,0,1 /\n"
+    (tmp_path / "a.fds").write_text(base)
+    fds = advisor.inspect_case(str(tmp_path))["fds"]
+    s = advisor.suggest("fds", [1, 2, 4, 8], [], fds=fds)
+    assert not any("DEVC" in n for n in s["notes"])
+    (tmp_path / "a.fds").write_text(base + "&DEVC ID='v', QUANTITY='VISIBILITY', XYZ=1,1,1 /\n")
+    fds = advisor.inspect_case(str(tmp_path))["fds"]
+    assert fds["slow_devc_on_amd"] == ["VISIBILITY"]
+    s = advisor.suggest("fds", [1, 2, 4, 8], [], fds=fds)
+    assert any("VISIBILITY" in n for n in s["notes"])
+
+
+def test_cost_in_euro():
+    assert server._eur("0.027") == "€0.027"
+    assert server._eur(12.5) == "€12.50"
+    assert server._eur("") is None
+    assert server._sim_summary({"cost": "1.2"})["cost_eur"] == "€1.20"

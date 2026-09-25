@@ -10,3 +10,4 @@ scripts/release.env
 e2e_results/
 scripts/release.sh
 scripts/release.env.example
+.venv-release/
