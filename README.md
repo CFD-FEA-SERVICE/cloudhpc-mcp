@@ -1,14 +1,23 @@
 # cloudHPC MCP server
 
 Run engineering simulations on [cloudHPC](https://cloudhpc.cloud) from AI assistants
-that support the Model Context Protocol (Claude Desktop, Claude Code, Gemini CLI,
-Cursor, ...): inspect a local case, get vCPU/RAM advice, upload the folder,
-launch, monitor, diagnose errors and download the results.
+that support the Model Context Protocol (MCP): Claude, ChatGPT/Codex, Gemini,
+GitHub Copilot and others. Inspect a local case, get vCPU/RAM advice, upload the
+folder, launch, monitor, diagnose errors and download the results, all from a
+conversation.
 
 Supported solvers: everything available on cloudHPC (FDS, OpenFOAM,
 snappyHexMesh, code_aster, CalculiX, OpenRadioss, SU2, ...). Resource advice
 follows the [cloudHPC scalability rules](https://docs.cloudhpc.cloud/scalability/)
 and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.cloud/errors/).
+
+- [What you can ask](#what-you-can-ask)
+- [Tools](#tools)
+- [Installation](#installation)
+- [Connect your AI assistant](#connect-your-ai-assistant)
+  - [Claude](#claude) · [ChatGPT / Codex](#chatgpt--codex) · [Gemini](#gemini) · [GitHub Copilot](#github-copilot) · [Other clients](#other-mcp-clients)
+- [Good to know](#good-to-know)
+- [Troubleshooting](#troubleshooting)
 
 ## What you can ask
 
@@ -39,27 +48,66 @@ and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.clou
 Actions that cost money or delete data first return a summary and run only
 after you confirm.
 
-## Requirements
+## Installation
+
+Requirements:
 
 - Python 3.10 or newer
 - A cloudHPC account and its API key: open your cloudHPC profile page
   ([APIKEY docs](https://docs.cloudhpc.cloud/APIKEY/)). The key gives full access
   to your account: keep it private.
 
-## Installation
+Install with [pipx](https://pipx.pypa.io) (recommended: isolated, and the
+command ends up in `~/.local/bin`, easy to find for desktop apps):
+
+```bash
+pipx install git+https://github.com/CFD-FEA-SERVICE/cloudhpc-mcp
+```
+
+or with pip:
 
 ```bash
 pip install git+https://github.com/CFD-FEA-SERVICE/cloudhpc-mcp
 ```
 
-This installs the `cloudhpc-mcp` command. The API key is read from the
-`CLOUDHPC_APIKEY` environment variable or, if that is not set, from the file
-`~/.cfscloudhpc/apikey` created by
+This installs the `cloudhpc-mcp` command. Find its full path, you may need it
+below:
+
+```bash
+which cloudhpc-mcp          # Linux / macOS
+where cloudhpc-mcp          # Windows
+```
+
+The API key is read from the `CLOUDHPC_APIKEY` environment variable or, if that
+is not set, from the file `~/.cfscloudhpc/apikey` created by
 [cloudHPCexec](https://github.com/CFD-FEA-SERVICE/CloudHPC/tree/master/exampleAPI).
 
-### Claude Desktop
+## Connect your AI assistant
 
-Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
+The server runs locally on your computer (stdio transport), so it can read your
+case folders and save results next to them.
+
+| Assistant | Desktop app | Terminal (Linux) |
+|---|---|---|
+| Claude | [Claude Desktop](#claude-desktop) (Windows, macOS, Linux beta) | [Claude Code](#claude-code) |
+| ChatGPT | [ChatGPT desktop app](#chatgpt-desktop-app) (where MCP servers are available) | [Codex CLI](#codex-cli) |
+| Gemini | not supported: the Gemini desktop app has no MCP support | [Gemini CLI](#gemini-cli) |
+| GitHub Copilot | [VS Code (Copilot agent mode)](#vs-code-copilot-agent-mode) | [Copilot CLI](#copilot-cli) |
+
+In every example replace `your-api-key` with your key. If the assistant cannot
+find the `cloudhpc-mcp` command, write its full path instead (see
+[Installation](#installation)).
+
+### Claude
+
+#### Claude Desktop
+
+Open **Settings > Developer > Edit Config** and add the server to
+`claude_desktop_config.json`:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- Linux: use **Edit Config** to open the file
 
 ```json
 {
@@ -72,29 +120,126 @@ Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
 }
 ```
 
-### Claude Code
+Restart Claude Desktop. The cloudHPC tools appear in the tools menu of a new
+conversation.
+
+#### Claude Code
 
 ```bash
-claude mcp add cloudhpc -e CLOUDHPC_APIKEY=your-api-key -- cloudhpc-mcp
+claude mcp add --scope user cloudhpc -e CLOUDHPC_APIKEY=your-api-key -- cloudhpc-mcp
 ```
 
-### Gemini CLI
+`--scope user` makes it available in every folder. Check it with `claude mcp list`
+or `/mcp` inside Claude Code.
 
-Add to `~/.gemini/settings.json`:
+### ChatGPT / Codex
+
+#### ChatGPT desktop app
+
+In recent versions of the ChatGPT desktop app: **Settings > MCP servers > Add
+server**, choose **STDIO**:
+
+- Command: `cloudhpc-mcp`
+- Environment variable: `CLOUDHPC_APIKEY` = `your-api-key`
+
+The app shares its MCP configuration with Codex (`~/.codex/config.toml`, see
+below), so a server added in one is available in the other. Availability
+depends on app version and plan. The ChatGPT **web** app only supports remote
+connectors and cannot run this local server.
+
+#### Codex CLI
+
+```bash
+codex mcp add cloudhpc --env CLOUDHPC_APIKEY=your-api-key -- cloudhpc-mcp
+```
+
+or edit `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.cloudhpc]
+command = "cloudhpc-mcp"
+tool_timeout_sec = 1900        # wait_for_simulation can wait up to 30 minutes
+
+[mcp_servers.cloudhpc.env]
+CLOUDHPC_APIKEY = "your-api-key"
+```
+
+Check it with `codex mcp list`.
+
+### Gemini
+
+#### Gemini CLI
+
+```bash
+gemini mcp add -s user -e CLOUDHPC_APIKEY=your-api-key cloudhpc cloudhpc-mcp
+```
+
+or edit `~/.gemini/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "cloudhpc": {
       "command": "cloudhpc-mcp",
-      "env": { "CLOUDHPC_APIKEY": "${CLOUDHPC_APIKEY}" },
+      "env": { "CLOUDHPC_APIKEY": "$CLOUDHPC_APIKEY" },
       "timeout": 1900000
     }
   }
 }
 ```
 
-(`timeout` is raised because `wait_for_simulation` can wait up to 30 minutes.)
+`$CLOUDHPC_APIKEY` takes the key from your shell (`export CLOUDHPC_APIKEY=...`);
+`timeout` (milliseconds) lets `wait_for_simulation` wait up to 30 minutes.
+Check it with `/mcp` inside Gemini CLI.
+
+The Gemini desktop and web apps do not support custom MCP servers.
+
+### GitHub Copilot
+
+#### VS Code (Copilot agent mode)
+
+Run **MCP: Open User Configuration** from the Command Palette (or create
+`.vscode/mcp.json` in a project) and add:
+
+```json
+{
+  "inputs": [
+    { "type": "promptString", "id": "cloudhpc-key",
+      "description": "cloudHPC API key", "password": true }
+  ],
+  "servers": {
+    "cloudhpc": {
+      "type": "stdio",
+      "command": "cloudhpc-mcp",
+      "env": { "CLOUDHPC_APIKEY": "${input:cloudhpc-key}" }
+    }
+  }
+}
+```
+
+VS Code asks for the key once and stores it securely. Open Copilot Chat in
+**Agent** mode and enable the cloudHPC tools from the tools picker.
+
+#### Copilot CLI
+
+Edit `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "cloudhpc": {
+      "type": "local",
+      "command": "cloudhpc-mcp",
+      "args": [],
+      "env": { "CLOUDHPC_APIKEY": "your-api-key" },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+or use `/mcp add` inside a Copilot CLI session. The Microsoft Copilot app for
+Windows does not support custom MCP servers.
 
 ### Other MCP clients
 
@@ -111,10 +256,23 @@ variable `CLOUDHPC_APIKEY`.
   error move to `standard`, then `highmem`. OpenFOAM and other MPI-only solvers
   use `highcore` or `hypercore`. 1 vCPU on `highcpu` is never suggested for a
   solver: it has too little RAM to start.
+- **Checking runs**: a run can end as COMPLETED even if the solver failed. When
+  a run ends the server scans its output for the errors listed in the
+  [errors guide](https://docs.cloudhpc.cloud/errors/) and suggests the fix.
 - **Storage**: files are deleted automatically 60 days after creation. Download
   your results.
 - **Rate limits**: 100 API calls/hour on free accounts, 500 on full accounts.
   The server reads the rate-limit headers and stops before exceeding them.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| The assistant does not see the cloudHPC tools | Restart the app after editing its configuration; in terminal apps check with `/mcp` or `mcp list`. |
+| `command not found` / server fails to start | Use the full path of `cloudhpc-mcp` (`which cloudhpc-mcp`). Desktop apps do not load your shell's PATH, conda or virtual environments. |
+| `Unauthorized: the API key is invalid` | Copy the key again from your cloudHPC profile page. |
+| `rate limit reached` | Wait for the next hour, or ask the assistant to check less often. |
+| The wait for a run is cut off | Raise the tool timeout of your client (see the examples above) or ask the assistant to wait in shorter steps. |
 
 ## Development
 
