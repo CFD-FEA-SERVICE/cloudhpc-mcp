@@ -43,8 +43,14 @@ def make_case_archive(folder: str, out_dir: str) -> str:
     return archive
 
 
-def safe_extract(archive: str, dest: str) -> int:
-    """Extract a tar.gz refusing absolute paths, '..' and links outside dest."""
+def safe_extract(archive: str, dest: str, overwrite: bool = False,
+                 kept: list[str] | None = None) -> int:
+    """Extract a tar.gz refusing absolute paths, '..' and links outside dest.
+
+    With overwrite=False, files that already exist in dest are left untouched
+    (their names are appended to `kept`): results never replace the user's
+    input files, e.g. an OpenFOAM system/decomposeParDict edited by cloudHPC.
+    """
     dest_real = os.path.realpath(dest)
     count = 0
     with tarfile.open(archive, "r:*") as tar:
@@ -58,6 +64,10 @@ def safe_extract(archive: str, dest: str) -> int:
                 if not link.startswith(dest_real + os.sep):
                     raise ValueError(f"Unsafe link in archive: {m.name}")
             if m.isdev():
+                continue
+            if not overwrite and m.isfile() and os.path.lexists(target):
+                if kept is not None:
+                    kept.append(m.name)
                 continue
             members.append(m)
         try:

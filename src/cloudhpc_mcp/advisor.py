@@ -102,6 +102,7 @@ def inspect_fds(path: str) -> dict[str, Any]:
         "mpi_groups": len(groups),
         "cells_per_group": sorted(groups.values()),
         "uses_mult_id": uses_mult,
+        "mpi_process_values": [m["mpi_process"] for m in meshes],
         "slow_devc_on_amd": sorted({q.upper() for q in re.findall(
             r"QUANTITY\s*=\s*'(VISIBILITY|RADIATIVE HEAT FLUX|GAUGE HEAT FLUX GAS)'", text, re.IGNORECASE)}),
     }

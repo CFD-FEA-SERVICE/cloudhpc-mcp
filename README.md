@@ -47,8 +47,11 @@ and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.clou
 | `delete_storage` | Delete a file or folder (**asks for confirmation**) |
 | `api_usage` | API rate limits and calls used |
 
-Actions that cost money or delete data first return a summary and run only
-after you confirm.
+Actions that cost money or delete data (launching a run, a hard stop,
+deleting from storage) always need your confirmation. In apps that support it
+(e.g. Claude Code) the server shows you a confirmation dialog directly, so the
+assistant cannot confirm on your behalf; in other apps the assistant shows you
+a summary and waits for your OK.
 
 ¹ Only with the local installation: they work on files on your computer. In web
 apps (hosted endpoint) use `get_upload_link` / `get_download_link` instead.
@@ -332,7 +335,9 @@ and `"headers"`; Codex CLI uses `url` and `http_headers` in `config.toml`).
   solver: it has too little RAM to start.
 - **Checking runs**: a run can end as COMPLETED even if the solver failed. When
   a run ends the server scans its output for the errors listed in the
-  [errors guide](https://docs.cloudhpc.cloud/errors/) and suggests the fix.
+  [errors guide](https://docs.cloudhpc.cloud/errors/) and suggests the fix;
+  after downloading, it also checks the solver's own logs (OpenFOAM `log.*`,
+  FDS `.out`).
 - **Costs** are billed per vCPU-hour and shown in euro when a run ends.
 - **Storage**: files are deleted automatically 60 days after creation. Download
   your results.

@@ -194,6 +194,16 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
             if order and order != sorted(order):
                 add("error", "MPI_PROCESS values are not in ascending order: reorder the &MESH lines.",
                     "scalability_issue_with_mpi_process")
+            vals = fds.get("mpi_process_values") or []
+            used = [v for v in vals if v is not None]
+            if used and len(used) != len(vals):
+                add("error", f"MPI_PROCESS is set on {len(used)} of {len(vals)} &MESH lines: "
+                             "set it on every mesh or on none.", "scalability_issue_with_mpi_process")
+            if used and sorted(set(used)) != list(range(max(used) + 1)):
+                missing = sorted(set(range(max(used) + 1)) - set(used))
+                add("error", f"MPI_PROCESS values must start at 0 with no gaps; process(es) "
+                             f"{', '.join(map(str, missing))} have no mesh.",
+                    "scalability_issue_with_mpi_process")
             if re.search(r"\b(VISIBILITY|RADIATIVE HEAT FLUX|GAUGE HEAT FLUX GAS)\b", text, re.IGNORECASE):
                 add("warning", "DEVC with VISIBILITY / RADIATIVE HEAT FLUX / GAUGE HEAT FLUX GAS slow "
                                "down AMD CPUs: prefer hypercpu/hypercore if delivery time matters.",
@@ -226,6 +236,23 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         if not (os.path.isdir(os.path.join(folder, "0")) or os.path.isdir(os.path.join(folder, "0.orig"))):
             add("warning", "No 0/ (or 0.orig/) folder with initial conditions.", "incorrect_dictionary")
 
+    if fam == "openfoam":
+        logs = sorted(os.path.basename(x) for x in glob.glob(os.path.join(folder, "log.*")))
+        if logs and (os.path.exists(os.path.join(folder, "Allrun"))
+                     or os.path.exists(os.path.join(folder, "Allrun.pre"))):
+            add("warning", f"Existing log files ({', '.join(logs[:6])}"
+                           f"{'...' if len(logs) > 6 else ''}): Allrun (runApplication) skips "
+                           "every step that already has a log, so meshing/solving may not run. "
+                           "Ask the user before removing them.", "general_problem_with_openfoam_solver")
+
+    leftovers = [f for f in ("cloudhpc.log", "cloudhpc.err", "cpu.csv", "ram.csv", "totcpu.csv")
+                 if os.path.exists(os.path.join(folder, f))]
+    leftovers += [os.path.basename(x) for x in glob.glob(os.path.join(folder, "*.tar.gz"))]
+    if leftovers:
+        add("info", f"Files from a previous cloudHPC run are in the folder ({', '.join(leftovers[:6])}"
+                    f"{'...' if len(leftovers) > 6 else ''}): they are uploaded too. Harmless, "
+                    "but a clean copy of the case uploads faster.", "incorrect_compressed_file")
+
     if fam == "code_aster":
         if not glob.glob(os.path.join(folder, "*.export")):
             add("error", "No .export file: code_aster needs .export, .comm and .med/.unv.",
@@ -234,3 +261,59 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
             add("warning", "No .med or .unv mesh found in the folder.", "code_aster_settings")
 
     return issues
+
+
+# ------------------------------------------------ solver logs after download
+
+def check_solver_logs(folder: str) -> list[dict[str, str]]:
+    """Check the solver's own logs in downloaded results.
+
+    OpenFOAM: every log.* must end with 'End' and contain no FOAM FATAL error.
+    FDS: <CHID>.out must contain 'FDS completed successfully'.
+    """
+    checks: list[dict[str, str]] = []
+
+    def tail(path: str, n: int = 8000) -> str:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(f.tell() - n, 0))
+                return f.read().decode(errors="replace")
+        except OSError:
+            return ""
+
+    def grep(path: str, pattern: str) -> str | None:
+        rx = re.compile(pattern)
+        try:
+            with open(path, "r", errors="replace") as f:
+                for line in f:
+                    if rx.search(line):
+                        return line.strip()[:200]
+        except OSError:
+            pass
+        return None
+
+    for log in sorted(glob.glob(os.path.join(folder, "log.*"))):
+        name = os.path.basename(log)
+        fatal = grep(log, r"FOAM FATAL (IO )?ERROR")
+        ended = re.search(r"^\s*End\s*$", tail(log), re.MULTILINE) is not None
+        if fatal:
+            checks.append({"file": name, "status": "error", "detail": fatal})
+        elif ended:
+            checks.append({"file": name, "status": "ok", "detail": "ends with 'End'"})
+        else:
+            checks.append({"file": name, "status": "warning",
+                           "detail": "no final 'End': the step stopped early or was interrupted"})
+
+    for out in sorted(glob.glob(os.path.join(folder, "*.out"))):
+        text = tail(out, 20000)
+        if "Fire Dynamics Simulator" not in text and "FDS" not in text:
+            continue
+        name = os.path.basename(out)
+        if "FDS completed successfully" in text:
+            checks.append({"file": name, "status": "ok", "detail": "FDS completed successfully"})
+        else:
+            err = grep(out, r"ERROR|Numerical Instability|STOP:")
+            checks.append({"file": name, "status": "error" if err else "warning",
+                           "detail": err or "no 'FDS completed successfully' line"})
+    return checks

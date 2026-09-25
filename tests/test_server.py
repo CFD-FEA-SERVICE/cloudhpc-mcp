@@ -536,3 +536,136 @@ def test_cost_in_euro():
     assert server._eur(12.5) == "€12.50"
     assert server._eur("") is None
     assert server._sim_summary({"cost": "1.2"})["cost_eur"] == "€1.20"
+
+
+def test_check_solver_logs(tmp_path):
+    (tmp_path / "log.blockMesh").write_text("Creating block mesh\nEnd\n")
+    (tmp_path / "log.foamRun").write_text("Time = 10\n--> FOAM FATAL ERROR: bad\n")
+    (tmp_path / "log.decomposePar").write_text("Processor 0\n")
+    (tmp_path / "room.out").write_text(" Fire Dynamics Simulator\nSTOP: FDS completed successfully (CHID: room)\n")
+    res = {c["file"]: c["status"] for c in errors.check_solver_logs(str(tmp_path))}
+    assert res == {"log.blockMesh": "ok", "log.foamRun": "error",
+                   "log.decomposePar": "warning", "room.out": "ok"}
+
+
+async def test_download_reports_solver_logs(api, tmp_path):
+    api.result_blob = make_tgz({"log.simpleFoam": b"Time = 1\nEnd\n"})
+    r = await server.download_results("caseA", str(tmp_path))
+    assert r["solver_ok"] is True and r["solver_logs"][0]["file"] == "log.simpleFoam"
+
+
+async def test_download_does_not_overwrite_inputs(api, tmp_path):
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "decomposeParDict").write_text("original")
+    api.result_blob = make_tgz({"system/decomposeParDict": b"changed", "0.3/U": b"u"})
+    r = await server.download_results("caseA", str(tmp_path))
+    assert (tmp_path / "system" / "decomposeParDict").read_text() == "original"
+    assert (tmp_path / "0.3" / "U").read_text() == "u"
+    assert r["downloads"][0]["kept_existing"] == ["system/decomposeParDict"]
+    api.result_blob = make_tgz({"system/decomposeParDict": b"changed"})
+    await server.download_results("caseA", str(tmp_path), overwrite=True)
+    assert (tmp_path / "system" / "decomposeParDict").read_text() == "changed"
+
+
+async def test_upload_blocked_by_preflight(api, tmp_path):
+    case = tmp_path / "ofcase"
+    (case / "system").mkdir(parents=True)
+    (case / "system" / "controlDict").write_text("startFrom latestTime;\n")
+    (case / "system" / "decomposeParDict").write_text("method simple;\n")
+    r = await server.upload_folder(str(case))
+    assert "nothing was uploaded" in r["error"]
+    assert any("scotch or hierarchical" in p["issue"] for p in r["problems"])
+    assert api.uploaded is None
+    r = await server.upload_folder(str(case), ignore_preflight=True)
+    assert r["uploaded"]
+
+
+async def test_upload_bad_local_name_ok_with_clean_storage_name(api, tmp_path):
+    case = tmp_path / "my case (v2)"
+    case.mkdir()
+    (case / "c.fds").write_text("&MESH IJK=10,10,10, XB=0,1,0,1,0,1 /\n")
+    r = await server.upload_folder(str(case))
+    assert "error" in r
+    r = await server.upload_folder(str(case), storage_folder="my_case_v2")
+    assert r["uploaded"] and r["storage_folder"] == "my_case_v2"
+
+
+def test_preflight_allrun_logs_and_leftovers(tmp_path):
+    of = tmp_path / "of"
+    (of / "system").mkdir(parents=True)
+    (of / "system" / "controlDict").write_text("startFrom latestTime;\n")
+    (of / "Allrun").write_text("runApplication blockMesh\n")
+    (of / "log.blockMesh").write_text("End\n")
+    (of / "cpu.csv").write_text("x")
+    text = " ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(of))))
+    assert "skips every step" in text and "previous cloudHPC run" in text
+
+
+def test_preflight_mpi_process_gaps_and_mixed(tmp_path):
+    (tmp_path / "a.fds").write_text(
+        "&MESH IJK=30,30,30, XB=0,1,0,1,0,1, MPI_PROCESS=1 /\n"
+        "&MESH IJK=30,30,30, XB=1,2,0,1,0,1, MPI_PROCESS=1 /\n")
+    text = " ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(tmp_path))))
+    assert "start at 0" in text
+    (tmp_path / "a.fds").write_text(
+        "&MESH IJK=30,30,30, XB=0,1,0,1,0,1, MPI_PROCESS=0 /\n"
+        "&MESH IJK=30,30,30, XB=1,2,0,1,0,1 /\n")
+    text = " ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(tmp_path))))
+    assert "every mesh or on none" in text
+
+
+async def test_launch_checks_fds_cores_after_upload(api, tmp_path):
+    case = tmp_path / "room"
+    case.mkdir()
+    (case / "r.fds").write_text(
+        "&MESH IJK=30,30,30, XB=0,1,0,1,0,1, MPI_PROCESS=0 /\n"
+        "&MESH IJK=30,30,30, XB=1,2,0,1,0,1, MPI_PROCESS=1 /\n")
+    assert (await server.upload_folder(str(case)))["uploaded"]
+    r = await server.launch_simulation("fds6.9.1", 2, "standard", "room", confirm=True)
+    assert any("low vCPU selected" in p for p in r["problems"])
+    r = await server.launch_simulation("fds6.9.1", 2, "highcore", "room")
+    assert r["confirmation_required"]
+    r = await server.launch_simulation("fds6.9.1", 4, "highcpu", "room")
+    assert r["confirmation_required"]
+
+
+class _FakeCtx:
+    """Minimal context: a client that supports elicitation and answers `answer`."""
+    def __init__(self, answer, supported=True):
+        self.answer, self.supported, self.asked = answer, supported, []
+
+    @property
+    def client_capabilities(self):
+        class C:
+            elicitation = {} if self.supported else None
+        return C()
+
+    async def elicit(self, message, schema):
+        self.asked.append(message)
+        class R:
+            action = "accept" if self.answer is not None else "cancel"
+            data = schema(confirm=bool(self.answer)) if self.answer is not None else None
+        return R()
+
+
+async def test_delete_uses_elicitation(api):
+    ctx = _FakeCtx(answer=False)
+    r = await server.delete_storage("caseA/FDS.tar.gz", confirm=True, ctx=ctx)   # confirm ignored
+    assert r["cancelled"] and ctx.asked
+    assert not any(m == "DELETE" and "/storage/delete" in p for m, p in api.calls)
+    ctx = _FakeCtx(answer=True)
+    r = await server.delete_storage("caseA/FDS.tar.gz", ctx=ctx)                 # no confirm needed
+    assert r["deleted"]
+
+
+async def test_launch_and_hard_stop_use_elicitation(api):
+    r = await server.launch_simulation("fds6.9.1", 8, "highcpu", "caseA", confirm=True,
+                                       ctx=_FakeCtx(answer=None))                # dialog cancelled
+    assert r["cancelled"]
+    r = await server.stop_simulation(10030, mode="hard", ctx=_FakeCtx(answer=True))
+    assert r["stopping"] and api.stopped == {"signal": "SIGINT"}
+
+
+async def test_fallback_without_elicitation(api):
+    r = await server.delete_storage("caseA/FDS.tar.gz", ctx=_FakeCtx(answer=True, supported=False))
+    assert r["confirmation_required"]

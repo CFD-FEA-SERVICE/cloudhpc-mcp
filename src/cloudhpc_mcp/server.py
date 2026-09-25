@@ -13,16 +13,18 @@ Two modes, same code:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Literal
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
+from mcp.server.mcpserver import Context, MCPServer
+from mcp_types import ToolAnnotations
+from pydantic import BaseModel, Field
 
-from . import advisor, errors, files
+from . import __version__, advisor, errors, files
 from .client import ACTIVE_STATUSES, REQUEST_LOG, STARTED_AT, STATUS, CloudHPCClient, CloudHPCError
 
 MODE = os.environ.get("CLOUDHPC_MCP_MODE", "local").lower()  # local | remote
@@ -61,20 +63,23 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
    OPENFOAM-solution.tar.gz, CALCULIX.tar.gz, ...). list_results then
    download_results (local) or get_download_link (remote).
 
+Never modify, move or delete the user's case files on your own initiative:
+report what the pre-flight checks found, propose the fix and ask first.
+
 Storage files are deleted automatically after 60 days: remind the user to
 download results. Avoid needless calls: the API is rate limited
 (100 calls/hour on free accounts, 500 on full accounts; no daily limit).
 Simulation costs are in euro and known only after the run.
 """
 
-mcp = FastMCP(
-    "cloudHPC",
-    instructions=INSTRUCTIONS,
-    host=os.environ.get("HOST", "0.0.0.0" if not LOCAL else "127.0.0.1"),
-    port=int(os.environ.get("PORT", "8080")),
-    stateless_http=True,
-    json_response=True,
-)
+mcp = MCPServer("cloudHPC", instructions=INSTRUCTIONS, version=__version__, log_level="WARNING")
+
+# never log request URLs: signed upload/download links carry access tokens
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
+HOST = os.environ.get("HOST", "0.0.0.0" if not LOCAL else "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8080"))
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
@@ -95,10 +100,12 @@ def _local_api_key() -> str:
 
 
 def _remote_api_key(ctx: Context | None) -> str:
-    request = getattr(getattr(ctx, "request_context", None), "request", None) if ctx else None
-    if request is None:
+    try:
+        headers = ctx.headers if ctx else None
+    except (ValueError, AttributeError):
+        headers = None
+    if not headers:
         return ""
-    headers = request.headers
     key = headers.get("x-api-key", "")
     if not key:
         auth = headers.get("authorization", "")
@@ -129,6 +136,27 @@ def _sim_summary(s: dict) -> dict:
         "cpu_hours": s.get("cpu_hrs") or None,
         "cost_eur": _eur(s.get("cost")),
     }
+
+
+# storage folder -> case info from the last upload in this process (local mode),
+# used by launch_simulation to check vCPU against the case (e.g. FDS meshes).
+UPLOADED_CASES: dict[str, dict] = {}
+
+
+def _fds_core_problem(info: dict | None, cpu: int, ram: str) -> str | None:
+    fds = (info or {}).get("fds")
+    if not fds:
+        return None
+    if fds["meshes"] == 1 and fds.get("total_cells", 0) >= 40_000:
+        return None  # single mesh: cloudHPC decomposes it to fit the vCPU
+    cores = cpu if ram in advisor.PHYSICAL_RAM else max(cpu // 2, 1)
+    groups = fds.get("mpi_groups") or fds["meshes"]
+    if cores < groups:
+        need = groups if ram in advisor.PHYSICAL_RAM else groups * 2
+        return (f"The case has {groups} mesh/MPI group(s) but {cpu} vCPU on {ram} give "
+                f"{cores} core(s): the run would stop with 'low vCPU selected'. Use at least "
+                f"{need} vCPU, or group meshes with MPI_PROCESS.")
+    return None
 
 
 def _eur(value: Any) -> str | None:
@@ -172,6 +200,46 @@ def _diagnosis(s: dict) -> dict:
             out.setdefault("warning", "Status is COMPLETED but FDS did not print 'STOP: FDS "
                                       "completed successfully': check <CHID>.out in the results.")
     return out
+
+
+class _Confirm(BaseModel):
+    confirm: bool = Field(description="Tick to confirm")
+
+
+async def _ask_user(ctx: Context | None, summary: str) -> str:
+    """Ask the USER directly through MCP elicitation.
+
+    Returns "yes", "no", or "unavailable" (client without elicitation, e.g.
+    stateless HTTP): then the tool falls back to the confirm=true two-step flow.
+    The assistant cannot answer an elicitation on the user's behalf.
+    """
+    if ctx is None:
+        return "unavailable"
+    try:
+        caps = ctx.client_capabilities
+        if not caps or getattr(caps, "elicitation", None) is None:
+            return "unavailable"
+        res = await ctx.elicit(summary, _Confirm)
+    except Exception:
+        return "unavailable"
+    if res.action == "accept" and getattr(res.data, "confirm", False):
+        return "yes"
+    return "no"
+
+
+async def _confirmed(ctx: Context | None, summary: str, confirm: bool) -> dict | None:
+    """None = go ahead; otherwise the dict to return to the assistant."""
+    answer = await _ask_user(ctx, summary)
+    if answer == "yes":
+        return None
+    if answer == "no":
+        return {"cancelled": True, "summary": summary,
+                "note": "The user declined in the confirmation dialog. Do not retry."}
+    if not confirm:
+        return {"confirmation_required": True, "summary": summary,
+                "note": "Show this summary to the user and call again with confirm=true "
+                        "only after the user explicitly agrees in their next message."}
+    return None
 
 
 def _err(e: Exception) -> dict:
@@ -342,18 +410,21 @@ async def get_upload_link(storage_folder: str, filename: str, ctx: Context = Non
 async def delete_storage(path: str, confirm: bool = False, ctx: Context = None) -> dict:
     """Delete a file or folder from storage. Irreversible.
 
-    Call first with confirm=false to get the summary, show it to the user, and
-    call again with confirm=true only after the user explicitly agrees.
+    If the client supports it, the user confirms in a dialog shown by the server.
+    Otherwise: call first with confirm=false, show the summary to the user and
+    call again with confirm=true only after the user agrees in a new message,
+    even if the original request was explicit.
     """
     c = client_for(ctx)
     try:
         info = await c.view_by_path(path)
     except CloudHPCError as e:
         return _err(e)
-    if not confirm:
-        return {"confirmation_required": True,
-                "summary": f"Delete {info.get('type', 'item')} '{path}' from cloudHPC storage. "
-                           "This cannot be undone."}
+    summary = (f"Delete {info.get('type', 'item')} '{path}' from cloudHPC storage. "
+               "This cannot be undone.")
+    stop = await _confirmed(ctx, summary, confirm)
+    if stop:
+        return stop
     try:
         await c.delete_path(path)
     except CloudHPCError as e:
@@ -412,8 +483,13 @@ async def launch_simulation(
                         "at start-up: use standard (or more vCPU).")
     if fam in advisor.NO_HYPERTHREAD and ram not in advisor.PHYSICAL_RAM:
         problems.append(f"{solver} does not use hyperthreading: use highcore or hypercore.")
+    if fam == "fds":
+        p = _fds_core_problem(UPLOADED_CASES.get(folder.strip("/")), cpu, ram)
+        if p:
+            problems.append(p)
     if problems:
-        return {"error": "Invalid launch parameters", "problems": problems}
+        return {"error": "Launch blocked by the MCP server's own checks (nothing was sent "
+                         "to cloudHPC, nothing started or billed).", "problems": problems}
 
     summary = (f"Run {solver} on {cpu} vCPU ({ram}"
                f"{', regular instance' if regular_instance else ', preemptible'}) "
@@ -421,8 +497,9 @@ async def launch_simulation(
                f"{f' with mesh from {mesh_folder}' if mesh_folder else ''}. "
                "Billed per vCPU-hour until the run ends or is stopped; the actual cost is "
                "shown when the run ends.")
-    if not confirm:
-        return {"confirmation_required": True, "summary": summary}
+    stop = await _confirmed(ctx, summary, confirm)
+    if stop:
+        return stop
     try:
         sim_id = await c.add_simulation(cpu, ram, solver, folder, mesh_folder, regular_instance)
     except CloudHPCError as e:
@@ -551,7 +628,11 @@ async def stop_simulation(
                f"status {STATUS.get(s.get('status'))}).")
     if s.get("status") not in ACTIVE_STATUSES:
         return {"error": f"Simulation is not active: {STATUS.get(s.get('status'))}"}
-    if not confirm:
+    if mode == "hard":   # immediate kill: always ask the user
+        stop = await _confirmed(ctx, summary, confirm)
+        if stop:
+            return stop
+    elif not confirm:    # soft stop: two-step confirmation is enough
         return {"confirmation_required": True, "summary": summary}
     try:
         await c.stop_simulation(simulation_id, hard=(mode == "hard"))
@@ -622,6 +703,7 @@ if LOCAL:
 
     @mcp.tool(annotations=WRITE)
     async def upload_folder(folder: str, storage_folder: str | None = None,
+                            ignore_preflight: bool = False,
                             ctx: Context = None) -> dict:
         """Compress a local case folder and upload it to cloudHPC storage.
 
@@ -629,6 +711,11 @@ if LOCAL:
         storage folder storage_folder (default: the local folder name).
         Hidden files are skipped. Returns the storage folder to use in
         launch_simulation.
+
+        The pre-flight checks of inspect_case always run first: if they find
+        errors (e.g. MPI_PROCESS order, decomposeParDict method) nothing is
+        uploaded. Explain the problems to the user and fix them; use
+        ignore_preflight=true only if the user explicitly wants to upload anyway.
         """
         folder = os.path.abspath(os.path.expanduser(folder))
         if not os.path.isdir(folder):
@@ -640,6 +727,20 @@ if LOCAL:
         if chars:
             return {"error": f"Storage folder name '{target}' contains characters cloudHPC does "
                              f"not accept: {' '.join(chars)}. Pass storage_folder with a clean name."}
+        try:
+            info = advisor.inspect_case(folder)
+            issues = errors.preflight(info)
+        except OSError:
+            info, issues = {}, []
+        if storage_folder:  # a clean storage name overrides the local folder name
+            issues = [i for i in issues if "Folder name" not in i["issue"]]
+        blocking = [i for i in issues if i["severity"] == "error"]
+        if blocking and not ignore_preflight:
+            return {"error": "Pre-flight checks failed: nothing was uploaded. Fix these "
+                             "problems first (or pass ignore_preflight=true if the user "
+                             "explicitly wants to upload anyway).",
+                    "problems": blocking,
+                    "other_notes": [i for i in issues if i["severity"] != "error"]}
         c = client_for(ctx)
         try:
             with tempfile.TemporaryDirectory(prefix="cloudhpc-") as tmp:
@@ -650,19 +751,31 @@ if LOCAL:
             await c.refresh_cache()
         except CloudHPCError as e:
             return _err(e)
-        return {"uploaded": True, "storage_folder": target,
-                "archive": f"{target}/{files.UPLOAD_ARCHIVE}",
-                "size_mb": round(size / 1e6, 2)}
+        UPLOADED_CASES[target] = info
+        out = {"uploaded": True, "storage_folder": target,
+               "archive": f"{target}/{files.UPLOAD_ARCHIVE}",
+               "size_mb": round(size / 1e6, 2)}
+        if issues:
+            out["preflight_notes"] = issues
+        return out
 
     @mcp.tool(annotations=WRITE)
     async def download_results(folder: str, local_dir: str, extract: bool = True,
                                files_to_get: list[str] | None = None,
+                               overwrite: bool = False,
                                ctx: Context = None) -> dict:
         """Download result archives of a storage folder to a local directory.
 
         folder: storage folder of the case. local_dir: where to save (created
         if missing). extract: unpack .tar.gz archives and delete them after.
         files_to_get: optional list of file names; default = all result archives.
+        overwrite: replace files that already exist in local_dir. Default false:
+        existing files (e.g. the user's input dictionaries) are kept and listed in
+        kept_existing, because cloudHPC returns some inputs modified (OpenFOAM
+        decomposeParDict, controlDict). Usually extract into the case folder.
+        After extracting, the solver's own logs are checked (OpenFOAM log.* must
+        end with 'End' and have no FOAM FATAL error; FDS .out must report
+        'FDS completed successfully'): see solver_ok / solver_logs.
         """
         c = client_for(ctx)
         local_dir = os.path.abspath(os.path.expanduser(local_dir))
@@ -686,14 +799,29 @@ if LOCAL:
                 size = await c.get_file(url, dest)
                 entry: dict[str, Any] = {"file": name, "size_mb": round(size / 1e6, 2)}
                 if extract and name.endswith((".tar.gz", ".tgz", ".tar")):
-                    entry["extracted_entries"] = await asyncio.to_thread(files.safe_extract, dest, local_dir)
+                    kept: list[str] = []
+                    entry["extracted_entries"] = await asyncio.to_thread(
+                        files.safe_extract, dest, local_dir, overwrite, kept)
+                    if kept:
+                        entry["kept_existing"] = kept[:50]
+                        entry["kept_existing_count"] = len(kept)
                     os.remove(dest)
                 else:
                     entry["saved_as"] = dest
                 done.append(entry)
             except (CloudHPCError, ValueError, OSError) as e:
                 done.append({"file": name, "error": str(e)})
-        return {"local_dir": local_dir, "downloads": done}
+        out = {"local_dir": local_dir, "downloads": done}
+        if extract:
+            logs = errors.check_solver_logs(local_dir)
+            if logs:
+                out["solver_logs"] = logs
+                bad = [l for l in logs if l["status"] != "ok"]
+                out["solver_ok"] = not bad
+                if bad:
+                    out["warning"] = ("Some solver logs show errors or did not finish: "
+                                      + ", ".join(l["file"] for l in bad))
+        return out
 
 
 # ---------------------------------------------------------------- entry
@@ -702,7 +830,8 @@ def main() -> None:
     if LOCAL:
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="streamable-http")
+        mcp.run(transport="streamable-http", host=HOST, port=PORT,
+                stateless_http=True, json_response=True)
 
 
 if __name__ == "__main__":
