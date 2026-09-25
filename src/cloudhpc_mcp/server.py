@@ -67,7 +67,9 @@ Never modify, move or delete the user's case files on your own initiative:
 report what the pre-flight checks found, propose the fix and ask first.
 
 Storage files are deleted automatically after 60 days: remind the user to
-download results. Avoid needless calls: the API is rate limited
+download results. If the storage folder or the result files of a simulation are
+missing, tell the user they were most likely deleted automatically after 60
+days or deleted manually from the storage; do not speculate further. Avoid needless calls: the API is rate limited
 (100 calls/hour on free accounts, 500 on full accounts; no daily limit).
 Simulation costs are in euro and known only after the run.
 """
@@ -242,8 +244,23 @@ async def _confirmed(ctx: Context | None, summary: str, confirm: bool) -> dict |
     return None
 
 
+MISSING_FILES_HINT = (
+    "The files are no longer in the storage. Most likely they were deleted "
+    "automatically because they were older than 60 days, or they were deleted "
+    "manually from the storage. If the input case is still on the computer, the "
+    "simulation can be run again.")
+
+
+def _is_missing(msg: str) -> bool:
+    m = msg.lower()
+    return "not found" in m or "technical problem" in m or "no download link" in m
+
+
 def _err(e: Exception) -> dict:
-    return {"error": str(e)}
+    out: dict[str, Any] = {"error": str(e)}
+    if _is_missing(str(e)):
+        out["hint"] = MISSING_FILES_HINT
+    return out
 
 
 # ------------------------------------------------------------ discovery
@@ -791,7 +808,8 @@ if LOCAL:
         done = []
         for name in wanted:
             if name not in names:
-                done.append({"file": name, "error": "not found in storage folder"})
+                done.append({"file": name, "error": "not found in storage folder",
+                             "hint": MISSING_FILES_HINT})
                 continue
             dest = os.path.join(local_dir, name)
             try:

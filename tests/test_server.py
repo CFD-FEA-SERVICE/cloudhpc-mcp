@@ -669,3 +669,10 @@ async def test_launch_and_hard_stop_use_elicitation(api):
 async def test_fallback_without_elicitation(api):
     r = await server.delete_storage("caseA/FDS.tar.gz", ctx=_FakeCtx(answer=True, supported=False))
     assert r["confirmation_required"]
+
+
+async def test_missing_files_hint(api):
+    r = await server.list_results("nope")
+    assert "not found" in r["error"] and "60 days" in r["hint"]
+    r = await server.list_storage("nope/sub")
+    assert "60 days" in r["hint"]
