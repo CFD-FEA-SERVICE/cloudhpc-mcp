@@ -75,7 +75,7 @@ class FakeAPI:
         if p == "/simulation/view-ram":
             return ok(["highcpu", "standard", "highmem", "hypercpu", "basegpu", "highcore", "hypercore"])
         if p == "/simulation/view-scripts":
-            return ok(["fds6.9.1", "openFoam-v2406", "calculiX-2.21-PARDISO", "codeAster-17.0_mpi"])
+            return ok(["fds6.9.1", "openFoam-v2406", "calculiX-2.21-PARDISO", "codeAster-17.0_mpi", "DAFoam-v5.0.0"])
         if p.startswith("/simulation/index-short/"):
             pg = int(p.rsplit("/", 1)[1])
             return ok([dict(SIM, status=self.sim_status), dict(SIM, id=10029, status=10)] if pg == 1 else [])
@@ -428,7 +428,7 @@ async def test_get_simulation_memory_hint(api, monkeypatch):
 
 # ------------------------------------------------------------ error catalogue
 
-from cloudhpc_mcp import errors  # noqa: E402
+from cloudhpc_mcp import errors, guides  # noqa: E402
 
 
 def test_diagnose_catalogue():
@@ -676,3 +676,97 @@ async def test_missing_files_hint(api):
     assert "not found" in r["error"] and "60 days" in r["hint"]
     r = await server.list_storage("nope/sub")
     assert "60 days" in r["hint"]
+
+
+# ------------------------------------------------------------ other solvers
+
+def _case(tmp_path, name, files_):
+    d = tmp_path / name
+    d.mkdir()
+    for fn, content in files_.items():
+        p = d / fn
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return d
+
+
+def test_family_of_new_solvers():
+    assert advisor.family_of("DAFoam-v5.0.0") == "dafoam"
+    assert advisor.family_of("DAFoam-turbo") == "dafoam"
+    assert advisor.family_of("CONTAM-3.4.0") == "contam"
+    assert advisor.family_of("EnergyPlus-9.6.0") == "energyplus"
+    assert advisor.family_of("LIGGGHTS-3.8.0") == "liggghts"
+    assert advisor.family_of("openlb-1.8r1") == "openlb"
+    assert advisor.family_of("openTELEMAC-v8p5r1") == "telemac"
+    assert advisor.family_of("openFoam-v2406") == "openfoam"
+
+
+def test_detect_and_preflight_new_solvers(tmp_path):
+    pf = lambda d: " ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(d))))
+
+    d = _case(tmp_path, "cont", {"a.prj": "x", "b.prj": "y"})
+    assert advisor.inspect_case(str(d))["family"] == "contam"
+    assert "only the first" in pf(d)
+
+    d = _case(tmp_path, "eplus", {"house.idf": "x"})
+    assert advisor.inspect_case(str(d))["family"] == "energyplus"
+    assert "weather" in pf(d)
+
+    d = _case(tmp_path, "tel", {"t3d.cas": "x", "geo.prj": "gis"})
+    assert advisor.inspect_case(str(d))["family"] == "telemac"
+    assert "TELEMAC-3D" in pf(d)
+
+    d = _case(tmp_path, "lig", {"in.hopper": "x", "inlet.stl": "y"})
+    assert advisor.inspect_case(str(d))["family"] == "liggghts"
+    assert "Several files start with 'in'" in pf(d)
+
+    d = _case(tmp_path, "olb", {"Makefile": "OLB_ROOT := x", "cavity.cpp": "int main(){}", "run.sh": "x"})
+    os.chmod(d / "run.sh", 0o755)
+    assert advisor.inspect_case(str(d))["family"] == "openlb"
+    assert "Executable files" in pf(d)
+
+    d = _case(tmp_path, "rad", {"crash_0000.rad": "x"})
+    assert advisor.inspect_case(str(d))["family"] == "openradioss"
+    assert "no engine file" in pf(d)
+    d = _case(tmp_path, "rad2", {"crash_0000.rad": "x", "crash_0001.rad": "y", "model.key": "z"})
+    assert ".key file (model.key) is used" in pf(d)
+
+    d = _case(tmp_path, "dafoam", {"runScript.py": "x", "Allrun": "y", "system/controlDict": "c",
+                                   "system/decomposeParDict": "numberOfSubdomains 4;\n"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "dafoam" and info["number_of_subdomains"] == 4
+    assert "runs BOTH" in pf(d)
+
+
+def test_suggest_new_solvers():
+    cpus = [1, 2, 4, 8, 16, 32]
+    assert advisor.suggest("contam", cpus, [])["cpu"] == 2
+    assert advisor.suggest("liggghts", cpus, [])["ram"] in ("highcore", "hypercore")
+    s = advisor.suggest("dafoam", cpus, [], cells=400_000)
+    assert s["cpu"] == 8 and s["ram"] == "highcore"
+    assert "openradioss" not in advisor.NO_HYPERTHREAD
+
+
+async def test_solver_guide_tool():
+    g = await server.solver_guide("EnergyPlus-9.6.0")
+    assert g["family"] == "energyplus" and any(".epw" in x for x in g["input"])
+    g = await server.solver_guide("dafoam")
+    assert any("NOT adjusted" in x for x in g["automatic"])
+    assert "error" in await server.solver_guide("unknownsolver")
+    # the guides must not expose platform internals
+    text = json.dumps(guides.GUIDES)
+    for leak in ("/opt/", "/home/", "mpirun", "sed -i", "lscpu"):
+        assert leak not in text
+
+
+async def test_launch_checks_dafoam_subdomains(api, tmp_path):
+    d = _case(tmp_path, "daf", {"runScript.py": "x", "preProcessing.sh": "y",
+                                "system/controlDict": "c",
+                                "system/decomposeParDict": "numberOfSubdomains 4;\n"})
+    assert (await server.upload_folder(str(d)))["uploaded"]
+    r = await server.launch_simulation("DAFoam-v5.0.0", 8, "highcore", "daf", confirm=True)
+    assert any("numberOfSubdomains is 4" in p for p in r["problems"])
+    r = await server.launch_simulation("DAFoam-v5.0.0", 4, "highcore", "daf")
+    assert r["confirmation_required"]
+    r = await server.launch_simulation("DAFoam-v5.0.0", 8, "highcpu", "daf", confirm=True)
+    assert any("hyperthreading" in p for p in r["problems"])

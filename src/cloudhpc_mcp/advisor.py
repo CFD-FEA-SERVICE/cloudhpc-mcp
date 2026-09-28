@@ -29,11 +29,18 @@ FAMILIES = {
     "code_aster": "code_aster",
     "openradioss": "OpenRadioss",
     "su2": "SU2",
+    "dafoam": "DAFoam",
+    "contam": "CONTAM",
+    "energyplus": "EnergyPlus",
+    "liggghts": "LIGGGHTS",
+    "openlb": "OpenLB",
+    "telemac": "openTELEMAC",
     "other": "Other / generic",
 }
 
 # solvers that only use physical cores (MPI): no hyperthreading
-NO_HYPERTHREAD = {"openfoam", "openradioss", "su2"}
+# (OpenRadioss uses OpenMP threads on the hyperthreads, so it is not listed)
+NO_HYPERTHREAD = {"openfoam", "su2", "dafoam", "liggghts", "telemac"}
 
 HT_RAM_LADDER = ["highcpu", "standard", "highmem"]
 PHYSICAL_RAM = ["highcore", "hypercore"]
@@ -41,6 +48,13 @@ PHYSICAL_RAM = ["highcore", "hypercore"]
 
 def family_of(script: str) -> str:
     s = script.lower()
+    if "dafoam" in s:
+        return "dafoam"
+    for prefix, fam in (("contam", "contam"), ("energyplus", "energyplus"),
+                        ("liggghts", "liggghts"), ("openlb", "openlb"),
+                        ("opentelemac", "telemac"), ("telemac", "telemac")):
+        if s.startswith(prefix):
+            return fam
     if s.startswith("fds"):
         return "fds"
     if any(k in s for k in ("openfoam", "snappyhexmesh", "cfmesh", "foam-extend")):
@@ -176,6 +190,23 @@ def inspect_case(folder: str) -> dict[str, Any]:
         "notes": [],
     }
 
+    def files(pattern: str) -> list[str]:
+        return sorted(os.path.basename(x) for x in glob.glob(os.path.join(folder, pattern))
+                      if os.path.isfile(x))
+
+    has_foam_case = os.path.exists(os.path.join(folder, "system", "controlDict"))
+    if files("runScript.py") or (files("preProcessing.sh") and has_foam_case):
+        info["family"] = "dafoam"
+        info["dafoam_entry"] = [f for f in ("preProcessing.sh", "runScript.py", "Allrun")
+                                if os.path.exists(os.path.join(folder, f))]
+        dpd = os.path.join(folder, "system", "decomposeParDict")
+        if os.path.exists(dpd):
+            with open(dpd, "r", errors="replace") as f:
+                m = re.search(r"^\s*numberOfSubdomains\s+(\d+)\s*;", f.read(), re.MULTILINE)
+            info["number_of_subdomains"] = int(m.group(1)) if m else None
+        info["cells"] = _openfoam_cells(folder)
+        return info
+
     fds = sorted(glob.glob(os.path.join(folder, "*.fds")))
     if fds:
         info["family"] = "fds"
@@ -221,8 +252,31 @@ def inspect_case(folder: str) -> dict[str, Any]:
                                  "ask the user for the number of nodes.")
         return info
 
-    if glob.glob(os.path.join(folder, "*_0000.rad")) or glob.glob(os.path.join(folder, "*.rad")):
+    for fam, pattern in (("telemac", "*.cas"), ("energyplus", "*.idf"), ("contam", "*.prj")):
+        found = files(pattern)
+        if found:
+            info["family"] = fam
+            info["input_files"] = found
+            return info
+
+    if files("Makefile") and files("*.cpp"):
+        info["family"] = "openlb"
+        info["executables"] = [f for f in os.listdir(folder)
+                               if os.path.isfile(os.path.join(folder, f))
+                               and os.access(os.path.join(folder, f), os.X_OK)]
+        return info
+
+    ins = files("in.*")
+    if ins:
+        info["family"] = "liggghts"
+        info["input_files"] = files("in*")
+        return info
+
+    if (glob.glob(os.path.join(folder, "*.rad")) or glob.glob(os.path.join(folder, "*.key"))):
         info["family"] = "openradioss"
+        info["input_files"] = sorted(os.path.basename(x) for x in
+                                     glob.glob(os.path.join(folder, "*.rad"))
+                                     + glob.glob(os.path.join(folder, "*.key")))
         info["notes"].append("Ask the user for the number of elements.")
         return info
 
@@ -418,6 +472,42 @@ def _suggest(family: str,
         cpu = _pick_cpu(max((cells or 0) // 50_000, 1) if cells else 16, cpu_options)
         return {"family": family, "cpu": cpu, "ram": physical_ram(),
                 "notes": ["SU2 runs with MPI: use highcore or hypercore."], "warnings": warnings}
+
+    if family == "dafoam":
+        needed = max((cells or 0) // 50_000, 2) if cells else 8
+        cpu = max(_pick_cpu(needed, cpu_options), _pick_cpu_up(2, cpu_options))
+        notes.append("DAFoam runs one MPI process per physical core: use highcore/hypercore and "
+                     f"set numberOfSubdomains {cpu} in system/decomposeParDict (cloudHPC does "
+                     "not adjust it for DAFoam).")
+        if not cells:
+            warnings.append("Number of cells unknown: 8 vCPU as a starting point.")
+        return {"family": family, "cpu": cpu, "ram": physical_ram(), "ideal_cpu": needed,
+                "notes": notes, "warnings": warnings}
+
+    if family == "contam":
+        return {"family": family, "cpu": _pick_cpu_up(2, cpu_options), "ram": "highcpu",
+                "notes": ["CONTAM runs on a single core: extra vCPU are not used."],
+                "warnings": warnings}
+
+    if family == "energyplus":
+        return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": "highcpu",
+                "notes": ["EnergyPlus 9.6.0 and later use all vCPU as threads; 2-4 vCPU are "
+                          "enough for most buildings (9.4.0 uses one thread)."],
+                "warnings": warnings}
+
+    if family in ("liggghts", "telemac"):
+        name = "LIGGGHTS" if family == "liggghts" else "openTELEMAC"
+        return {"family": family, "cpu": _pick_cpu(8, cpu_options), "ram": physical_ram(),
+                "notes": [f"{name} runs one MPI process per physical core: use highcore or "
+                          "hypercore."],
+                "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point; ask "
+                             "the user about the model size."]}
+
+    if family == "openlb":
+        return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": "highcpu",
+                "notes": ["The OpenLB executable runs as a single process (no MPI launcher); "
+                          "more vCPU help only if OpenLB is built with OpenMP."],
+                "warnings": warnings}
 
     return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": "highcpu",
             "notes": ["No specific rule: 4 vCPU on highcpu as a starting point."],

@@ -128,6 +128,27 @@ CATALOG: list[dict[str, str]] = [
      "cause": "controlDict startFrom is not latestTime (changed automatically).",
      "fix": "Set 'startFrom latestTime;' in system/controlDict.",
      "anchor": "controldict"},
+    # ------------------------------------------------------ other solvers
+    {"id": "contam_prj", "severity": "error",
+     "pattern": r"No PRJ file found",
+     "cause": "CONTAM: no .prj project file in the case folder.",
+     "fix": "Upload the .prj project (and the files it references) in the case folder.",
+     "anchor": ""},
+    {"id": "energyplus_idf", "severity": "error",
+     "pattern": r"No IDF file found",
+     "cause": "EnergyPlus: no .idf model in the case folder.",
+     "fix": "Upload the .idf model (and the .epw weather file) in the case folder.",
+     "anchor": ""},
+    {"id": "liggghts_in", "severity": "error",
+     "pattern": r"No IN file found",
+     "cause": "LIGGGHTS: no input script whose name starts with 'in' (e.g. in.hopper).",
+     "fix": "Name the LIGGGHTS input script in.<name> and upload it in the case folder.",
+     "anchor": ""},
+    {"id": "telemac_cas", "severity": "error",
+     "pattern": r"No CAS file found",
+     "cause": "openTELEMAC: no .cas steering file in the case folder.",
+     "fix": "Upload the .cas steering file and the files it references in the case folder.",
+     "anchor": ""},
     # -------------------------------------------------------- code_aster
     {"id": "ca_export", "severity": "error",
      "pattern": r"no export file detected",
@@ -149,7 +170,7 @@ def diagnose(text: str) -> list[dict[str, Any]]:
             found.append({
                 "id": entry["id"], "severity": entry["severity"], "matched": line[:200],
                 "cause": entry["cause"], "fix": entry["fix"],
-                "docs": f"{DOCS}#{entry['anchor']}",
+                "docs": f"{DOCS}#{entry['anchor']}" if entry["anchor"] else None,
             })
     order = {"error": 0, "warning": 1, "info": 2}
     return sorted(found, key=lambda f: order[f["severity"]])
@@ -170,7 +191,8 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
     folder = info["folder"]
 
     def add(severity, msg, anchor):
-        issues.append({"severity": severity, "issue": msg, "docs": f"{DOCS}#{anchor}"})
+        issues.append({"severity": severity, "issue": msg,
+                       "docs": f"{DOCS}#{anchor}" if anchor else None})
 
     chars = bad_name(info["storage_name"])
     if chars:
@@ -252,6 +274,56 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         add("info", f"Files from a previous cloudHPC run are in the folder ({', '.join(leftovers[:6])}"
                     f"{'...' if len(leftovers) > 6 else ''}): they are uploaded too. Harmless, "
                     "but a clean copy of the case uploads faster.", "incorrect_compressed_file")
+
+    many = info.get("input_files") or []
+    if fam in ("contam", "energyplus", "telemac") and len(many) > 1:
+        add("warning", f"{len(many)} input files found ({', '.join(many[:5])}): only the first "
+                       f"in alphabetical order ({many[0]}) is run. Keep one per case folder.", "")
+
+    if fam == "energyplus" and not glob.glob(os.path.join(folder, "*.epw")):
+        add("info", "No .epw weather file: only design days can be simulated, not an annual run.", "")
+
+    if fam == "telemac":
+        add("info", "This solver entry runs TELEMAC-3D: a TELEMAC-2D steering file will not run.", "")
+
+    if fam == "liggghts":
+        ins = info.get("input_files") or []
+        if len(ins) > 1:
+            add("error", f"Several files start with 'in' ({', '.join(ins[:5])}): the input "
+                         "script must be the only one, otherwise another file may be read as "
+                         "the script. Rename the others (e.g. inlet.stl -> mesh_inlet.stl).", "")
+
+    if fam == "openlb":
+        exe = info.get("executables") or []
+        if exe:
+            add("error", f"Executable files at the folder root ({', '.join(exe[:5])}): the case "
+                         "is compiled and the single executable produced is run, so other "
+                         "executables must be removed (or their execute permission removed).", "")
+
+    if fam == "dafoam":
+        entry = info.get("dafoam_entry") or []
+        if not ({"runScript.py", "Allrun"} & set(entry)):
+            add("error", "DAFoam needs runScript.py (with preProcessing.sh) or an Allrun script.", "")
+        if {"runScript.py", "Allrun"} <= set(entry):
+            add("warning", "Both runScript.py and Allrun are present: cloudHPC runs BOTH "
+                           "(preProcessing.sh, runScript.py, then Allrun). Keep only the one you "
+                           "need.", "")
+        if info.get("number_of_subdomains") is None:
+            add("warning", "numberOfSubdomains not found in system/decomposeParDict: for DAFoam "
+                           "it must be set by you and match the physical cores.", "")
+
+    if fam == "openradioss":
+        names = info.get("input_files") or []
+        keys = [n for n in names if n.endswith(".key")]
+        starters = [n for n in names if n.endswith("_0000.rad")]
+        engines = [n for n in names if n.endswith(".rad") and not n.endswith("_0000.rad")]
+        if keys and starters:
+            add("warning", f"Both LS-DYNA (.key) and Radioss (_0000.rad) inputs are present: the "
+                           f".key file ({keys[0]}) is used.", "")
+        if not keys and not starters:
+            add("error", "No OpenRadioss starter (*_0000.rad) or LS-DYNA (.key) input found.", "")
+        if starters and not keys and not engines:
+            add("error", "Starter *_0000.rad found but no engine file (*_0001.rad).", "")
 
     if fam == "code_aster":
         if not glob.glob(os.path.join(folder, "*.export")):

@@ -8,7 +8,8 @@ folder, launch, monitor, diagnose errors and download the results, all from a
 conversation.
 
 Supported solvers: everything available on cloudHPC (FDS, OpenFOAM,
-snappyHexMesh, code_aster, CalculiX, OpenRadioss, SU2, ...). Resource advice
+snappyHexMesh, DAFoam, code_aster, CalculiX, OpenRadioss, SU2, openTELEMAC,
+LIGGGHTS, OpenLB, EnergyPlus, CONTAM, ...). Resource advice
 follows the [cloudHPC scalability rules](https://docs.cloudhpc.cloud/scalability/)
 and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.cloud/errors/).
 
@@ -34,6 +35,7 @@ and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.clou
 |---|---|
 | `inspect_case` ¹ | Detect solver and model size of a local folder (FDS meshes/MPI groups, OpenFOAM cells, CalculiX nodes, ...) and run pre-flight checks |
 | `suggest_resources` | vCPU and RAM type recommendation, with reasoning |
+| `solver_guide` | How to prepare a case for a solver: input files, what cloudHPC does automatically, parallelism, logs |
 | `list_solvers`, `list_machine_options` | Available solvers, vCPU counts and RAM types |
 | `upload_folder` ¹ | Compress a local case folder and upload it to your storage |
 | `launch_simulation` | Launch a run (**asks for confirmation**) |

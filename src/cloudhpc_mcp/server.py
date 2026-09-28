@@ -24,7 +24,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from . import __version__, advisor, errors, files
+from . import __version__, advisor, errors, files, guides
 from .client import ACTIVE_STATUSES, REQUEST_LOG, STARTED_AT, STATUS, CloudHPCClient, CloudHPCError
 
 MODE = os.environ.get("CLOUDHPC_MCP_MODE", "local").lower()  # local | remote
@@ -36,6 +36,8 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
 
 1. Understand the case. In local mode call inspect_case on the user's folder:
    it detects the solver and the model size (FDS meshes, OpenFOAM cells, ...).
+   solver_guide explains what each solver needs (input files, what cloudHPC
+   does automatically, parallelism): use it for solvers the user is new to.
 2. Choose the solver version with list_solvers and the resources with
    suggest_resources. Explain the suggestion briefly (vCPU, RAM type, why).
    RAM types: highcpu < standard < highmem use the same CPUs with 1 to 8 GB
@@ -304,6 +306,24 @@ async def list_machine_options(ctx: Context = None) -> dict:
 
 
 @mcp.tool(annotations=READ)
+async def solver_guide(solver: str) -> dict:
+    """How to prepare a case for a solver on cloudHPC: required input files,
+    what cloudHPC does automatically, parallelism, resources, log files.
+
+    solver: script name (e.g. "EnergyPlus-9.6.0", "DAFoam-v5.0.0") or family
+    ("fds", "openfoam", "dafoam", "calculix", "code_aster", "openradioss",
+    "contam", "energyplus", "liggghts", "openlb", "telemac"). Makes no API calls.
+    Use it before uploading a case for a solver the user has not run before.
+    """
+    fam = solver if solver in guides.GUIDES else advisor.family_of(solver)
+    g = guides.guide_for(fam)
+    if not g:
+        return {"error": f"No guide for '{solver}' yet.",
+                "available": sorted(guides.GUIDES)}
+    return {"family": fam, **g}
+
+
+@mcp.tool(annotations=READ)
 async def suggest_resources(
     solver: str,
     cells: int | None = None,
@@ -504,6 +524,14 @@ async def launch_simulation(
         p = _fds_core_problem(UPLOADED_CASES.get(folder.strip("/")), cpu, ram)
         if p:
             problems.append(p)
+    if fam == "dafoam":
+        nsub = (UPLOADED_CASES.get(folder.strip("/")) or {}).get("number_of_subdomains")
+        cores = cpu if ram in advisor.PHYSICAL_RAM else max(cpu // 2, 1)
+        if nsub and nsub != cores:
+            problems.append(f"DAFoam: numberOfSubdomains is {nsub} in system/decomposeParDict but "
+                            f"{cpu} vCPU on {ram} give {cores} MPI processes, and cloudHPC does "
+                            f"not adjust it for DAFoam. Use {nsub} vCPU on highcore/hypercore or "
+                            "change numberOfSubdomains.")
     if problems:
         return {"error": "Launch blocked by the MCP server's own checks (nothing was sent "
                          "to cloudHPC, nothing started or billed).", "problems": problems}
