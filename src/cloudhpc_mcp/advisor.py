@@ -57,7 +57,7 @@ def family_of(script: str) -> str:
             return fam
     if s.startswith("fds"):
         return "fds"
-    if any(k in s for k in ("openfoam", "snappyhexmesh", "cfmesh", "foam-extend")):
+    if any(k in s for k in ("openfoam", "snappyhexmesh", "cfmesh", "foam-extend", "foamextend")):
         return "openfoam"
     if s.startswith("calculix"):
         return "calculix"
@@ -257,6 +257,17 @@ def inspect_case(folder: str) -> dict[str, Any]:
         if found:
             info["family"] = fam
             info["input_files"] = found
+            if fam == "energyplus":
+                try:
+                    with open(os.path.join(folder, found[0]), "r", errors="replace") as f:
+                        text = f.read()
+                    m = re.search(r"^\s*Version\s*,\s*([0-9][0-9.]*)\s*;", text,
+                                  re.IGNORECASE | re.MULTILINE)
+                    info["idf_version"] = m.group(1) if m else None
+                    info["hvac_templates"] = bool(re.search(r"^\s*HVACTemplate:", text,
+                                                            re.IGNORECASE | re.MULTILINE))
+                except OSError:
+                    pass
             return info
 
     if files("Makefile") and files("*.cpp"):

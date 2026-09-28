@@ -121,9 +121,25 @@ GUIDES: dict[str, dict[str, Any]] = {
     "energyplus": {
         "name": "EnergyPlus (9.4.0, 9.6.0, 25.2.0)",
         "input": [
-            "One .idf model (with several, only the first in alphabetical order is run).",
-            "Optional: a .epw weather file (without it only design days can run), a custom "
-            ".idd, or a .imf macro file (EP-Macro is then run and the model expanded).",
+            "One .idf model (with several, only the first in alphabetical order is run). "
+            "epJSON models are not picked up: export or convert to .idf.",
+            "Optional: one .epw weather file (without it only design days can run), a custom "
+            ".idd, or a .imf macro file (EP-Macro and ExpandObjects are then run).",
+        ],
+        "before_upload": [
+            "The Version object in the IDF must match the solver you launch (9.4.0, 9.6.0 or "
+            "25.2.0): convert older models locally with IDFVersionUpdater. A version mismatch "
+            "is the most common failure.",
+            "HVACTemplate objects are expanded only when the model is uploaded as .imf: for a "
+            "plain .idf, expand it locally (ExpandObjects, or export the expanded model from "
+            "your tool) before uploading.",
+            "External files (Schedule:File CSVs, FMUs, window data files) must be in the case "
+            "folder and referenced with relative paths, no C:\\... paths. File names are "
+            "case-sensitive (Schedules.csv is not schedules.csv).",
+            "Test locally with design days first (energyplus -D -w weather.epw model.idf) and "
+            "check the .err file for severe errors before paying for an annual run.",
+            "One model per run: for a parametric study, create one case folder per variant and "
+            "launch one run each.",
         ],
         "automatic": [
             "Spaces in .idf, .epw, .idd and .imf file names are replaced with underscores.",
@@ -133,6 +149,9 @@ GUIDES: dict[str, dict[str, Any]] = {
                     "more than a few threads.",
         "resources": "2-4 vCPU on highcpu are enough for most buildings.",
         "logs": ["energyplus.log", "eplusout.err (EnergyPlus errors and warnings)"],
+        "outputs": "EnergyPlus native outputs (.eso, .sql, .htm tables, .err). Time-series CSV "
+                   "files are not generated automatically: read the .sql/.eso or convert them "
+                   "locally with ReadVarsESO.",
         "docs": "https://energyplus.net/documentation",
     },
     "liggghts": {

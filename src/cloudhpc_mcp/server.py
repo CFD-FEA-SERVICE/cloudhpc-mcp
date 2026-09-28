@@ -36,8 +36,10 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
 
 1. Understand the case. In local mode call inspect_case on the user's folder:
    it detects the solver and the model size (FDS meshes, OpenFOAM cells, ...).
-   solver_guide explains what each solver needs (input files, what cloudHPC
-   does automatically, parallelism): use it for solvers the user is new to.
+   solver_guide is the authoritative description of how cloudHPC runs each
+   solver (which input files are picked, what is done automatically, flags,
+   parallelism, outputs): ALWAYS call it before answering questions on how to
+   prepare or run a case for a solver, instead of guessing.
 2. Choose the solver version with list_solvers and the resources with
    suggest_resources. Explain the suggestion briefly (vCPU, RAM type, why).
    RAM types: highcpu < standard < highmem use the same CPUs with 1 to 8 GB
@@ -313,7 +315,8 @@ async def solver_guide(solver: str) -> dict:
     solver: script name (e.g. "EnergyPlus-9.6.0", "DAFoam-v5.0.0") or family
     ("fds", "openfoam", "dafoam", "calculix", "code_aster", "openradioss",
     "contam", "energyplus", "liggghts", "openlb", "telemac"). Makes no API calls.
-    Use it before uploading a case for a solver the user has not run before.
+    Always call it when the user asks how to prepare, structure or run a case for a
+    solver: it is the authoritative description of how cloudHPC runs that solver.
     """
     fam = solver if solver in guides.GUIDES else advisor.family_of(solver)
     g = guides.guide_for(fam)
@@ -524,6 +527,13 @@ async def launch_simulation(
         p = _fds_core_problem(UPLOADED_CASES.get(folder.strip("/")), cpu, ram)
         if p:
             problems.append(p)
+    if fam == "energyplus":
+        idf_v = (UPLOADED_CASES.get(folder.strip("/")) or {}).get("idf_version")
+        solver_v = solver.split("-", 1)[1] if "-" in solver else ""
+        if idf_v and solver_v and idf_v.split(".")[:2] != solver_v.split(".")[:2]:
+            problems.append(f"The IDF is version {idf_v} but {solver} was selected: the Version "
+                            "must match. Choose the matching EnergyPlus version or convert the "
+                            "model with IDFVersionUpdater.")
     if fam == "dafoam":
         nsub = (UPLOADED_CASES.get(folder.strip("/")) or {}).get("number_of_subdomains")
         cores = cpu if ram in advisor.PHYSICAL_RAM else max(cpu // 2, 1)

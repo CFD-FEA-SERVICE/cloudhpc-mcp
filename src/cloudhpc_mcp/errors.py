@@ -280,6 +280,12 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         add("warning", f"{len(many)} input files found ({', '.join(many[:5])}): only the first "
                        f"in alphabetical order ({many[0]}) is run. Keep one per case folder.", "")
 
+    if fam == "energyplus" and info.get("hvac_templates") and not glob.glob(os.path.join(folder, "*.imf")):
+        add("error", "The model uses HVACTemplate objects, which are not expanded for a plain .idf: "
+                     "expand the model locally (ExpandObjects) before uploading.", "")
+    if fam == "energyplus" and info.get("input_files") and info.get("idf_version") is None:
+        add("warning", "No Version object found in the IDF: add it (it must match the solver "
+                       "version you launch).", "")
     if fam == "energyplus" and not glob.glob(os.path.join(folder, "*.epw")):
         add("info", "No .epw weather file: only design days can be simulated, not an annual run.", "")
 

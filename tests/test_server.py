@@ -75,7 +75,7 @@ class FakeAPI:
         if p == "/simulation/view-ram":
             return ok(["highcpu", "standard", "highmem", "hypercpu", "basegpu", "highcore", "hypercore"])
         if p == "/simulation/view-scripts":
-            return ok(["fds6.9.1", "openFoam-v2406", "calculiX-2.21-PARDISO", "codeAster-17.0_mpi", "DAFoam-v5.0.0"])
+            return ok(["fds6.9.1", "openFoam-v2406", "calculiX-2.21-PARDISO", "codeAster-17.0_mpi", "DAFoam-v5.0.0", "EnergyPlus-9.6.0", "EnergyPlus-25.2.0"])
         if p.startswith("/simulation/index-short/"):
             pg = int(p.rsplit("/", 1)[1])
             return ok([dict(SIM, status=self.sim_status), dict(SIM, id=10029, status=10)] if pg == 1 else [])
@@ -770,3 +770,19 @@ async def test_launch_checks_dafoam_subdomains(api, tmp_path):
     assert r["confirmation_required"]
     r = await server.launch_simulation("DAFoam-v5.0.0", 8, "highcpu", "daf", confirm=True)
     assert any("hyperthreading" in p for p in r["problems"])
+
+
+async def test_energyplus_version_and_templates(api, tmp_path):
+    d = _case(tmp_path, "house", {"house.idf": "Version,\n  9.6;\nBuilding, x;\n", "w.epw": "x"})
+    info = advisor.inspect_case(str(d))
+    assert info["idf_version"] == "9.6" and not info["hvac_templates"]
+    assert (await server.upload_folder(str(d)))["uploaded"]
+    r = await server.launch_simulation("EnergyPlus-25.2.0", 2, "highcpu", "house", confirm=True)
+    assert any("version 9.6" in p for p in r["problems"])
+    r = await server.launch_simulation("EnergyPlus-9.6.0", 2, "highcpu", "house")
+    assert r["confirmation_required"]
+
+    d = _case(tmp_path, "hvac", {"m.idf": "Version, 25.2;\nHVACTemplate:Zone:IdealLoadsAirSystem, z;\n"})
+    r = await server.upload_folder(str(d))
+    assert any("HVACTemplate" in p["issue"] for p in r["problems"])
+    assert advisor.family_of("foamExtend-5.0") == "openfoam"
