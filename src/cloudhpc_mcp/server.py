@@ -8,6 +8,12 @@ Two modes, same code:
                             API key comes with each request in the X-API-Key
                             or Authorization: Bearer header. File transfers
                             are done by the client with signed URLs.
+  public (streamable-http)  key-less guide endpoint for website chat bots:
+                            only solver_guide, list_solvers,
+                            list_machine_options and suggest_resources. The
+                            solver/machine catalog is read with a dedicated
+                            account key (CLOUDHPC_CATALOG_APIKEY) and cached;
+                            requests are limited per client IP.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import logging
 import os
 import tempfile
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Literal
 
@@ -27,8 +34,16 @@ from pydantic import BaseModel, Field
 from . import __version__, advisor, errors, files, guides
 from .client import ACTIVE_STATUSES, REQUEST_LOG, STARTED_AT, STATUS, CloudHPCClient, CloudHPCError
 
-MODE = os.environ.get("CLOUDHPC_MCP_MODE", "local").lower()  # local | remote
+MODE = os.environ.get("CLOUDHPC_MCP_MODE", "local").lower()  # local | remote | public
+if MODE not in ("local", "remote", "public"):
+    raise SystemExit(f"CLOUDHPC_MCP_MODE must be local, remote or public, not '{MODE}'")
 LOCAL = MODE == "local"
+PUBLIC = MODE == "public"
+
+# public mode: the only tools exposed (no account data, no costs)
+PUBLIC_TOOLS = ("solver_guide", "list_solvers", "list_machine_options", "suggest_resources")
+CATALOG_TTL = int(os.environ.get("CLOUDHPC_CATALOG_TTL", "3600"))          # seconds
+PUBLIC_RATE_PER_MIN = int(os.environ.get("CLOUDHPC_PUBLIC_RATE_PER_MIN", "60"))
 
 INSTRUCTIONS = """\
 cloudHPC runs engineering simulations (FDS, OpenFOAM, code_aster, CalculiX,
@@ -78,7 +93,32 @@ days or deleted manually from the storage; do not speculate further. Avoid needl
 Simulation costs are in euro and known only after the run.
 """
 
-mcp = MCPServer("cloudHPC", instructions=INSTRUCTIONS, version=__version__, log_level="WARNING")
+PUBLIC_INSTRUCTIONS = """\
+cloudHPC runs engineering simulations (FDS, OpenFOAM, code_aster, CalculiX,
+OpenRadioss, SU2, EnergyPlus, ...) on cloud machines. This endpoint answers
+general "how do I..." questions; it has no access to any user account.
+
+- solver_guide is the authoritative description of how cloudHPC runs each
+  solver (input files, what is done automatically, parallelism, resources,
+  logs): ALWAYS call it before answering how to prepare or run a case,
+  instead of guessing.
+- list_solvers: available solvers and versions. list_machine_options: vCPU
+  and RAM types. suggest_resources: vCPU and RAM type for a model size.
+  RAM types: highcpu < standard < highmem use the same CPUs with 1 to 8 GB
+  per vCPU and hyperthreading; highcore/hypercore use physical cores only.
+  OpenFOAM and other MPI-only solvers must use highcore or hypercore. For
+  FDS/CalculiX/code_aster start on highcpu and move to standard, then
+  highmem, only after a memory error.
+
+Never ask for API keys, passwords, simulation IDs or files, and never accept
+them in the chat. For anything about the user's own account (their
+simulations, storage, results, costs, errors of a specific run) point them to
+support, or to connecting their own AI assistant to cloudHPC with their API
+key: https://github.com/CFD-FEA-SERVICE/cloudhpc-mcp . Documentation:
+https://docs.cloudhpc.cloud . Costs are in euro.
+"""
+
+mcp = MCPServer("cloudHPC", instructions=PUBLIC_INSTRUCTIONS if PUBLIC else INSTRUCTIONS, version=__version__, log_level="WARNING")
 
 # never log request URLs: signed upload/download links carry access tokens
 for _name in ("httpx", "httpcore"):
@@ -121,8 +161,34 @@ def _remote_api_key(ctx: Context | None) -> str:
 
 
 def client_for(ctx: Context | None) -> CloudHPCClient:
-    key = _local_api_key() if LOCAL else _remote_api_key(ctx)
+    if PUBLIC:  # dedicated catalog account; only catalog calls are made with it
+        key = os.environ.get("CLOUDHPC_CATALOG_APIKEY", "").strip()
+    else:
+        key = _local_api_key() if LOCAL else _remote_api_key(ctx)
     return CloudHPCClient(api_key=key)
+
+
+# public mode: solver list and machine options, shared by all visitors
+_CATALOG: dict[str, tuple[float, Any]] = {}
+
+
+async def _catalog(ctx: Context | None, what: Literal["scripts", "cpu", "ram"]) -> Any:
+    """Solver list / vCPU options / RAM types. Cached for CATALOG_TTL in public
+    mode (about one API call per hour whatever the traffic); if the API fails,
+    the last good value is served."""
+    hit = _CATALOG.get(what) if PUBLIC else None
+    if hit and time.time() - hit[0] < CATALOG_TTL:
+        return hit[1]
+    c = client_for(ctx)
+    try:
+        value = await {"scripts": c.scripts, "cpu": c.cpu_options, "ram": c.ram_options}[what]()
+    except CloudHPCError:
+        if hit:
+            return hit[1]
+        raise
+    if PUBLIC:
+        _CATALOG[what] = (time.time(), value)
+    return value
 
 
 def _sim_summary(s: dict) -> dict:
@@ -276,7 +342,7 @@ async def list_solvers(search: str | None = None, ctx: Context = None) -> dict:
     search: optional case-insensitive substring (e.g. "openfoam", "fds6.9").
     """
     try:
-        scripts = await client_for(ctx).scripts()
+        scripts = await _catalog(ctx, "scripts")
     except CloudHPCError as e:
         return _err(e)
     if search:
@@ -288,8 +354,7 @@ async def list_solvers(search: str | None = None, ctx: Context = None) -> dict:
 async def list_machine_options(ctx: Context = None) -> dict:
     """List the vCPU counts and RAM/instance types that can be requested."""
     try:
-        c = client_for(ctx)
-        cpus, rams = await asyncio.gather(c.cpu_options(), c.ram_options())
+        cpus, rams = await asyncio.gather(_catalog(ctx, "cpu"), _catalog(ctx, "ram"))
     except CloudHPCError as e:
         return _err(e)
     return {
@@ -367,8 +432,7 @@ async def suggest_resources(
                     "cells_per_group": [], "uses_mpi_process": bool(fds_mpi_groups),
                     "uses_mult_id": False}
     try:
-        c = client_for(ctx)
-        cpus, rams = await asyncio.gather(c.cpu_options(), c.ram_options())
+        cpus, rams = await asyncio.gather(_catalog(ctx, "cpu"), _catalog(ctx, "ram"))
     except CloudHPCError as e:
         return _err(e)
     return advisor.suggest(family, cpus, rams, cells=cells, nodes=nodes,
@@ -880,11 +944,78 @@ if LOCAL:
         return out
 
 
+# ------------------------------------------------------- public mode
+
+if PUBLIC:
+    for _t in list(mcp._tool_manager.list_tools()):
+        if _t.name not in PUBLIC_TOOLS:
+            mcp.remove_tool(_t.name)
+
+
+def client_ip(scope: dict, trusted_proxies: int = 0) -> str:
+    """Client address. Behind a proxy (Cloud Run) the real client is the
+    right-most X-Forwarded-For entry added by the proxy: entries further left
+    are sent by the client and can be forged."""
+    for name, value in scope.get("headers") or []:
+        if name == b"x-forwarded-for":
+            hops = [h.strip() for h in value.decode("latin-1").split(",") if h.strip()]
+            if hops:
+                return hops[max(len(hops) - 1 - trusted_proxies, 0)]
+    client = scope.get("client")
+    return client[0] if client else "unknown"
+
+
+class PerIPRateLimit:
+    """ASGI middleware: at most `per_minute` HTTP requests per client IP in any
+    60-second window (in memory, per server instance). Answers 429 above it."""
+
+    def __init__(self, app, per_minute: int, trusted_proxies: int = 0,
+                 clock=time.monotonic):
+        self.app, self.limit, self.trusted = app, per_minute, trusted_proxies
+        self.clock = clock
+        self.hits: dict[str, deque] = {}
+
+    def allow(self, ip: str) -> tuple[bool, int]:
+        now = self.clock()
+        q = self.hits.setdefault(ip, deque())
+        while q and now - q[0] >= 60:
+            q.popleft()
+        if len(q) >= self.limit:
+            return False, max(int(60 - (now - q[0])) + 1, 1)
+        q.append(now)
+        if len(self.hits) > 10_000:  # forget idle addresses
+            for k in [k for k, v in self.hits.items() if not v or now - v[-1] >= 60]:
+                del self.hits[k]
+        return True, 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or self.limit <= 0:
+            return await self.app(scope, receive, send)
+        ok, retry = self.allow(client_ip(scope, self.trusted))
+        if ok:
+            return await self.app(scope, receive, send)
+        body = b'{"error": "Too many requests: slow down and retry later."}'
+        await send({"type": "http.response.start", "status": 429,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"retry-after", str(retry).encode()),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 # ---------------------------------------------------------------- entry
 
 def main() -> None:
     if LOCAL:
         mcp.run(transport="stdio")
+    elif PUBLIC:
+        import uvicorn
+
+        if not os.environ.get("CLOUDHPC_CATALOG_APIKEY", "").strip():
+            logging.warning("CLOUDHPC_CATALOG_APIKEY is not set: list_solvers, "
+                            "list_machine_options and suggest_resources will fail.")
+        app = mcp.streamable_http_app(stateless_http=True, json_response=True, host=HOST)
+        uvicorn.run(PerIPRateLimit(app, PUBLIC_RATE_PER_MIN), host=HOST, port=PORT,
+                    log_level="warning")
     else:
         mcp.run(transport="streamable-http", host=HOST, port=PORT,
                 stateless_http=True, json_response=True)

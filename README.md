@@ -345,6 +345,12 @@ and `"headers"`; Codex CLI uses `url` and `http_headers` in `config.toml`).
   your results.
 - **Rate limits**: 100 API calls/hour on free accounts, 500 on full accounts (no daily limit).
   The server reads the rate-limit headers and stops before exceeding them.
+- **Your data**: what the tools return (simulation names, logs, file lists,
+  costs) is sent to the AI provider of the assistant you use, under your own
+  account and its terms. For confidential projects check your provider's data
+  settings (e.g. training opt-out, business plans). With the local installation
+  your API key stays on your computer; the hosted endpoint only forwards it and
+  stores nothing.
 
 ## Troubleshooting
 
@@ -365,6 +371,14 @@ cd cloudhpc-mcp
 pip install -e ".[test]"
 pytest            # offline tests with a mocked API
 ```
+
+Server modes (`CLOUDHPC_MCP_MODE`):
+
+| Mode | Transport | Use |
+|---|---|---|
+| `local` (default) | stdio | Desktop and terminal apps on your computer |
+| `remote` | streamable HTTP | Hosted endpoint; the API key comes with each request |
+| `public` | streamable HTTP | Key-less guide endpoint (e.g. for a website chat bot): only `solver_guide`, `list_solvers`, `list_machine_options`, `suggest_resources`. The solver and machine catalog is read with the key in `CLOUDHPC_CATALOG_APIKEY` (a dedicated account with no data) and cached for `CLOUDHPC_CATALOG_TTL` seconds (default 3600); requests are limited to `CLOUDHPC_PUBLIC_RATE_PER_MIN` per client IP (default 60) |
 
 `scripts/e2e_test.py` runs the whole workflow against the real API with your
 account: it uploads a tiny FDS case and, with `--confirm-costs`, runs it on

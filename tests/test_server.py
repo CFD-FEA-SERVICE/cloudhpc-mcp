@@ -786,3 +786,85 @@ async def test_energyplus_version_and_templates(api, tmp_path):
     r = await server.upload_folder(str(d))
     assert any("HVACTemplate" in p["issue"] for p in r["problems"])
     assert advisor.family_of("foamExtend-5.0") == "openfoam"
+
+
+# ------------------------------------------------------------- public mode
+
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+
+def test_public_mode_exposes_only_guide_tools():
+    import subprocess
+    import sys
+    code = ("import asyncio; from cloudhpc_mcp import server; "
+            "print(sorted(t.name for t in asyncio.run(server.mcp.list_tools()))); "
+            "print('API keys' in server.mcp.instructions)")
+    env = {**os.environ, "CLOUDHPC_MCP_MODE": "public", "PYTHONPATH": SRC}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                         text=True, check=True).stdout.splitlines()
+    assert out[0] == str(sorted(server.PUBLIC_TOOLS))
+    assert out[1] == "True"
+
+
+def test_invalid_mode_is_rejected():
+    import subprocess
+    import sys
+    env = {**os.environ, "CLOUDHPC_MCP_MODE": "publik", "PYTHONPATH": SRC}
+    r = subprocess.run([sys.executable, "-c", "import cloudhpc_mcp.server"], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode != 0 and "must be local, remote or public" in r.stderr
+
+
+async def test_public_catalog_is_cached(api, monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC", True)
+    monkeypatch.setattr(server, "_CATALOG", {})
+    await server.list_solvers()
+    await server.list_machine_options()
+    await server.suggest_resources("fds", fds_meshes=2)
+    await server.list_solvers(search="openfoam")
+    catalog_calls = [c for c in api.calls if "view-" in c[1]]
+    assert len(catalog_calls) == 3  # scripts, cpu, ram once each
+
+
+async def test_public_catalog_serves_stale_on_api_error(monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC", True)
+    monkeypatch.setattr(server, "_CATALOG", {"scripts": (0.0, ["fds6.9.1"])})  # expired
+    down = httpx.MockTransport(lambda req: httpx.Response(503, json={"errors": ["down"]}))
+    monkeypatch.setattr(server, "client_for", lambda ctx=None: CloudHPCClient(
+        api_key="k", api_url=API, transport=down))
+    r = await server.list_solvers()
+    assert "error" not in r and "fds6.9.1" in json.dumps(r)
+
+
+def test_client_ip_uses_rightmost_forwarded_entry():
+    scope = {"headers": [(b"x-forwarded-for", b"6.6.6.6, 203.0.113.7")],
+             "client": ("169.254.1.1", 1)}
+    assert server.client_ip(scope) == "203.0.113.7"          # 6.6.6.6 is forgeable
+    assert server.client_ip(scope, trusted_proxies=1) == "6.6.6.6"
+    assert server.client_ip({"headers": [], "client": ("10.0.0.1", 5)}) == "10.0.0.1"
+
+
+async def test_rate_limit_per_ip():
+    now = [1000.0]
+    seen = []
+
+    async def app(scope, receive, send):
+        seen.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    mw = server.PerIPRateLimit(app, per_minute=3, clock=lambda: now[0])
+
+    async def hit(ip):
+        sent = []
+
+        async def send(m):
+            sent.append(m)
+
+        await mw({"type": "http", "path": "/mcp", "headers": [(b"x-forwarded-for", ip.encode())]},
+                 None, send)
+        return sent[0]["status"]
+
+    assert [await hit("1.1.1.1") for _ in range(4)] == [200, 200, 200, 429]
+    assert await hit("2.2.2.2") == 200          # other clients unaffected
+    now[0] += 61
+    assert await hit("1.1.1.1") == 200          # window passed
