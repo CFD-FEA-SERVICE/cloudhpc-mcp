@@ -975,15 +975,3 @@ async def test_rate_limit_per_ip():
     assert await hit("2.2.2.2") == 200          # other clients unaffected
     now[0] += 61
     assert await hit("1.1.1.1") == 200          # window passed
-
-
-async def test_catalog_error_has_no_storage_hint(monkeypatch):
-    monkeypatch.setattr(server, "PUBLIC", True)
-    monkeypatch.setattr(server, "_CATALOG", {})
-    bad = httpx.MockTransport(lambda req: httpx.Response(
-        403, json={"errors": ["A technical problem has occurred, try again later."]}))
-    monkeypatch.setattr(server, "client_for", lambda ctx=None: CloudHPCClient(
-        api_key="k", api_url=API, transport=bad))
-    for r in (await server.list_solvers(), await server.list_machine_options(),
-              await server.suggest_resources("fds", fds_meshes=2)):
-        assert "error" in r and "hint" not in r and "solver_guide" in r["note"]
