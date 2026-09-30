@@ -3,7 +3,8 @@
 Rules (docs.cloudhpc.cloud/scalability + cloudHPC blog posts):
   FDS        vCPU = MPI groups x2 on highcpu/standard/highmem/hypercpu,
              x1 on highcore/hypercore; >= 15,000-20,000 cells per mesh/group;
-             single &MESH >= 40,000 cells with >= 4 vCPU is auto-decomposed.
+             a single &MESH is split automatically across the physical cores
+             (>= 15,000 cells and >= 12 cells per direction per piece).
   OpenFOAM   MPI only -> highcore/hypercore; >= 50,000 cells per core.
   CalculiX   PARDISO scales up to ~200,000 nodes per core.
   code_aster MPI ranks with >= 100,000 nodes per rank, 2 threads per rank (max 4).
@@ -35,12 +36,16 @@ FAMILIES = {
     "liggghts": "LIGGGHTS",
     "openlb": "OpenLB",
     "telemac": "openTELEMAC",
+    "codesaturne": "code_saturne",
+    "swan": "SWAN",
+    "xbeach": "XBeach",
+    "custom": "Custom scripts (bash / Python)",
     "other": "Other / generic",
 }
 
 # solvers that only use physical cores (MPI): no hyperthreading
 # (OpenRadioss uses OpenMP threads on the hyperthreads, so it is not listed)
-NO_HYPERTHREAD = {"openfoam", "su2", "dafoam", "liggghts", "telemac"}
+NO_HYPERTHREAD = {"openfoam", "su2", "dafoam", "liggghts", "telemac", "codesaturne", "xbeach"}
 
 HT_RAM_LADDER = ["highcpu", "standard", "highmem"]
 PHYSICAL_RAM = ["highcore", "hypercore"]
@@ -52,7 +57,9 @@ def family_of(script: str) -> str:
         return "dafoam"
     for prefix, fam in (("contam", "contam"), ("energyplus", "energyplus"),
                         ("liggghts", "liggghts"), ("openlb", "openlb"),
-                        ("opentelemac", "telemac"), ("telemac", "telemac")):
+                        ("opentelemac", "telemac"), ("telemac", "telemac"),
+                        ("codesaturne", "codesaturne"), ("code_saturne", "codesaturne"),
+                        ("swan", "swan"), ("xbeach", "xbeach"), ("custom-script", "custom")):
         if s.startswith(prefix):
             return fam
     if s.startswith("fds"):
@@ -86,8 +93,10 @@ _MULT_RE = re.compile(r"\bMULT_ID\s*=", re.IGNORECASE)
 
 
 def inspect_fds(path: str) -> dict[str, Any]:
-    with open(path, "r", errors="replace") as f:
-        text = f.read()
+    with open(path, "rb") as fb:
+        raw = fb.read()
+    raw_non_ascii = any(b > 127 for b in raw)
+    text = raw.decode("utf-8", errors="replace")
     # drop comment lines outside namelists is not needed: FDS ignores text
     # outside '&...' groups, and the regex only matches '&MESH ... /'
     meshes = []
@@ -119,7 +128,43 @@ def inspect_fds(path: str) -> dict[str, Any]:
         "mpi_process_values": [m["mpi_process"] for m in meshes],
         "slow_devc_on_amd": sorted({q.upper() for q in re.findall(
             r"QUANTITY\s*=\s*'(VISIBILITY|RADIATIVE HEAT FLUX|GAUGE HEAT FLUX GAS)'", text, re.IGNORECASE)}),
+        "mesh_boundary_vents": bool(re.search(r"&VENT\b[^/]*?\bMB\s*=", text, re.IGNORECASE | re.DOTALL)),
+        "non_ascii": raw_non_ascii,
+        "has_part": bool(re.search(r"^\s*&PART\b", text, re.IGNORECASE | re.MULTILINE)),
+        "t_end": _t_end(text),
+        "max_ramp_t": _max_ramp_t(text),
+        "evacuation": bool(re.search(r"&MESH\b[^/]*?\bEVACUATION\s*=\s*\.?T", text, re.IGNORECASE | re.DOTALL)),
     }
+
+
+def _num(s: str) -> float | None:
+    try:
+        return float(s.replace("D", "E").replace("d", "e"))
+    except ValueError:
+        return None
+
+
+def _t_end(text: str) -> float | None:
+    m = re.search(r"\bT_END\s*=\s*([-+0-9.eEdD]+)", text)
+    return _num(m.group(1)) if m else None
+
+
+def _max_ramp_t(text: str) -> float | None:
+    ts = [_num(t) for t in re.findall(r"&RAMP\b[^/]*?\bT\s*=\s*([-+0-9.eEdD]+)", text,
+                                       re.IGNORECASE | re.DOTALL)]
+    ts = [t for t in ts if t is not None]
+    return max(ts) if ts else None
+
+
+def fds_auto_split(fds: dict | None) -> bool:
+    """True if cloudHPC will split the single &MESH across the physical cores:
+    one &MESH, no MULT_ID / MPI_PROCESS, no mesh-boundary (MB) vents, and
+    enough cells for at least two pieces of ~15,000 cells."""
+    if not fds:
+        return False
+    return (fds.get("meshes") == 1 and not fds.get("uses_mult_id")
+            and not fds.get("uses_mpi_process") and not fds.get("mesh_boundary_vents")
+            and (fds.get("total_cells") or 0) >= 30_000)
 
 
 def _openfoam_cells(folder: str) -> int | None:
@@ -161,6 +206,17 @@ def _count_inp_nodes(path: str) -> int | None:
     except OSError:
         return None
     return nodes or None
+
+
+def _saturne_case(folder: str) -> str | None:
+    """code_saturne case = folder with DATA and SRC, at the root or one level down."""
+    if os.path.isdir(os.path.join(folder, "DATA")) and os.path.isdir(os.path.join(folder, "SRC")):
+        return "."
+    for d in sorted(os.listdir(folder)):
+        p = os.path.join(folder, d)
+        if os.path.isdir(os.path.join(p, "DATA")) and os.path.isdir(os.path.join(p, "SRC")):
+            return d
+    return None
 
 
 def inspect_case(folder: str) -> dict[str, Any]:
@@ -207,13 +263,14 @@ def inspect_case(folder: str) -> dict[str, Any]:
         info["cells"] = _openfoam_cells(folder)
         return info
 
-    fds = sorted(glob.glob(os.path.join(folder, "*.fds")))
+    fds = sorted(glob.glob(os.path.join(folder, "*.fds")) + glob.glob(os.path.join(folder, "*.FDS")))
     if fds:
         info["family"] = "fds"
         info["fds"] = inspect_fds(fds[0])
         if len(fds) > 1:
             info["notes"].append(f"{len(fds)} .fds files found; analysed {os.path.basename(fds[0])}. "
-                                 "cloudHPC expects one .fds file per case folder.")
+                                 "Only the first one (alphabetical order) is run: keep one "
+                                 ".fds file per case folder.")
         return info
 
     if os.path.exists(os.path.join(folder, "system", "controlDict")):
@@ -223,9 +280,8 @@ def inspect_case(folder: str) -> dict[str, Any]:
             info["notes"].append("No constant/polyMesh found (mesh generated at run time?): "
                                  "ask the user for the expected number of cells.")
         if not os.path.exists(os.path.join(folder, "system", "decomposeParDict")):
-            info["notes"].append("system/decomposeParDict is missing: cloudHPC updates "
-                                 "numberOfSubdomains automatically, but the file must exist. "
-                                 "Template: https://github.com/CFD-FEA-SERVICE/CloudHPC/blob/master/template/OpenFOAM/system/decomposeParDict")
+            info["notes"].append("system/decomposeParDict is missing: cloudHPC adds a default "
+                                 "one (scotch). Template: https://github.com/CFD-FEA-SERVICE/CloudHPC/blob/master/template/OpenFOAM/system/decomposeParDict")
         procs = glob.glob(os.path.join(folder, "processor*"))
         if procs:
             info["notes"].append(f"{len(procs)} processor* folders found: they are uploaded too "
@@ -237,8 +293,21 @@ def inspect_case(folder: str) -> dict[str, Any]:
         info["family"] = "code_aster"
         if exports:
             with open(exports[0], "r", errors="replace") as f:
-                m = re.search(r"^P\s+mpi_nbcpu\s+(\d+)", f.read(), re.MULTILINE)
+                export_text = f.read()
+            m = re.search(r"^P\s+mpi_nbcpu\s+(\d+)", export_text, re.MULTILINE)
             info["mpi_nbcpu"] = int(m.group(1)) if m else None
+            # input files referenced by the .export (F <type> <path> D ...): paths are
+            # reduced to the file name, so the files must be in the case folder
+            refs = re.findall(r"^F\s+(\w+)\s+(\S+)\s+D\b", export_text, re.MULTILINE)
+            info["export_inputs"] = sorted({os.path.basename(p.replace("\\", "/")) for _, p in refs})
+        comm_text = ""
+        for c in glob.glob(os.path.join(folder, "*.comm")):
+            try:
+                with open(c, "r", errors="replace") as f:
+                    comm_text += f.read()
+            except OSError:
+                pass
+        info["comm_parallel"] = bool(re.search(r"NB_SOUS_DOMAINE|NIVEAU_PARALLELISME", comm_text))
         info["notes"].append("Node count not read automatically for code_aster (MED mesh): "
                              "ask the user for the number of nodes.")
         return info
@@ -246,7 +315,8 @@ def inspect_case(folder: str) -> dict[str, Any]:
     inps = glob.glob(os.path.join(folder, "*.inp"))
     if inps:
         info["family"] = "calculix"
-        info["nodes"] = _count_inp_nodes(inps[0])
+        info["input_files"] = sorted(os.path.basename(x) for x in inps)
+        info["nodes"] = _count_inp_nodes(sorted(inps)[0])
         if info["nodes"] is None:
             info["notes"].append("Nodes not found in the main .inp (meshes in *INCLUDE files?): "
                                  "ask the user for the number of nodes.")
@@ -291,9 +361,33 @@ def inspect_case(folder: str) -> dict[str, Any]:
         info["notes"].append("Ask the user for the number of elements.")
         return info
 
-    if glob.glob(os.path.join(folder, "*.cfg")):
-        info["family"] = "su2"
+    saturne = _saturne_case(folder)
+    if saturne is not None:
+        info["family"] = "codesaturne"
+        info["saturne_case"] = saturne
         info["notes"].append("Ask the user for the number of cells.")
+        return info
+
+    if files("*.swn"):
+        info["family"] = "swan"
+        info["input_files"] = files("*.swn")
+        return info
+
+    if files("params.txt"):
+        info["family"] = "xbeach"
+        return info
+
+    cfgs = [c for c in files("*.cfg") if c != "config_CFD.cfg"]
+    if cfgs:
+        info["family"] = "su2"
+        info["input_files"] = cfgs
+        info["notes"].append("Ask the user for the number of cells.")
+        return info
+
+    if files("*.sh") or files("*.py"):
+        info["family"] = "custom"
+        info["scripts"] = files("*.sh") + files("*.py")
+        info["has_requirements"] = bool(files("requirements.txt"))
         return info
 
     info["notes"].append("Solver not recognised from the files: ask the user which solver to use.")
@@ -369,14 +463,16 @@ def _suggest(family: str,
         per_group = 1 if ram in PHYSICAL_RAM else 2
         if fds:
             groups = fds["mpi_groups"] or 1
-            if fds["meshes"] == 1 and fds["total_cells"] >= 40_000:
+            if fds_auto_split(fds):
                 limit = max(fds["total_cells"] // 15_000, 1)
                 needed = limit * per_group
-                notes.append(f"Single &MESH with {fds['total_cells']:,} cells: with >= 4 vCPU "
-                             f"cloudHPC decomposes it automatically (up to ~{limit} meshes at "
-                             "15,000 cells each). Check smoke/temperature spread in Smokeview.")
-                if needed < 4:
-                    warnings.append("Fewer than 4 vCPU: the mesh will not be decomposed.")
+                notes.append(f"Single &MESH with {fds['total_cells']:,} cells: cloudHPC splits it "
+                             f"automatically into one piece per physical core (up to ~{limit} "
+                             "pieces: at least 15,000 cells and 12 cells per direction each; the "
+                             "split must divide the IJK cell counts exactly, so IJK values with "
+                             "many divisors split best). Check the result in Smokeview.")
+                if needed < 2 * per_group:
+                    warnings.append("Fewer than 2 physical cores: the mesh will not be split.")
             else:
                 needed = groups * per_group
             small = [c for c in fds["cells_per_group"] if c and c < 15_000]
@@ -387,6 +483,9 @@ def _suggest(family: str,
             if cpg and min(cpg) > 0 and max(cpg) / min(cpg) > 2:
                 warnings.append(f"Unbalanced load: largest group {max(cpg):,} cells vs smallest "
                                 f"{min(cpg):,}. Rebalance with MPI_PROCESS or split large meshes.")
+            if fds["meshes"] == 1 and fds.get("mesh_boundary_vents"):
+                notes.append("The single &MESH is not split automatically because the case has "
+                             "&VENT with MB= (mesh boundary vents).")
             if fds.get("uses_mult_id"):
                 warnings.append("MULT_ID is used: the real number of meshes is higher than the "
                                 "&MESH lines counted; recompute vCPU with the multiplied meshes.")
@@ -395,13 +494,13 @@ def _suggest(family: str,
         else:
             return {"error": "For FDS, pass the parsed .fds info (use inspect_case) "
                              "or the number of &MESH / MPI_PROCESS groups."}
-        decomposed = fds["meshes"] == 1 and fds["total_cells"] >= 40_000
+        decomposed = fds_auto_split(fds)
         if decomposed:
             # cloudHPC splits the single mesh to fit the vCPU: rounding down is safe
             cpu = _pick_cpu(needed, cpu_options)
         else:
-            # every mesh/MPI group needs its own core, otherwise the run stops with
-            # "@@@ ERROR: low vCPU selected": round UP
+            # one MPI process per mesh/group: round UP (fewer vCPU than groups stops
+            # the run with "low vCPU selected"; fewer physical cores than groups is slow)
             cpu = _pick_cpu_up(needed, cpu_options)
             if cpu < needed:
                 warnings.append(f"{needed} vCPU needed but the largest option is {cpu}: group "
@@ -442,8 +541,9 @@ def _suggest(family: str,
         else:
             cpu, needed = _pick_cpu(4, cpu_options), 4
             warnings.append("Number of nodes unknown: 4 vCPU is a conservative starting point.")
-        notes.append("Prefer a PARDISO version (e.g. calculiX-2.21-PARDISO, set "
-                     "*STATIC, SOLVER=PARDISO in the .inp); the default SPOOLES scales poorly.")
+        notes.append("Prefer a PARDISO version (calculiX-2.19-PARDISO multi-threaded, or "
+                     "calculiX-2.18-PARDISO-MPI) and set SOLVER=PARDISO on *STATIC; SPOOLES "
+                     "scales poorly.")
         notes.append("RAM: start on highcpu, then standard, then highmem if it fails for memory.")
         return {"family": family, "cpu": cpu, "ram": "highcpu", "ideal_cpu": needed,
                 "notes": notes, "warnings": warnings}
@@ -453,14 +553,16 @@ def _suggest(family: str,
             ranks = max(nodes // 100_000, 1)
             needed = ranks * 2
             cpu = _pick_cpu(needed, cpu_options)
-            notes.append(f"Rule (blog benchmark): >= 100,000 nodes per MPI rank, 2 threads per "
-                         f"rank (max 4) -> {ranks} ranks x 2 threads = {needed} vCPU. Set "
-                         f"'P mpi_nbcpu {max(cpu // 2, 1)}' in the .export file.")
+            notes.append(f"Rule (blog benchmark): >= 100,000 nodes per MPI process -> {ranks} "
+                         f"processes, 2 vCPU each = {needed} vCPU. Set 'P mpi_nbcpu "
+                         f"{max(cpu // 2, 1)}' in the .export file.")
         else:
             cpu, needed = _pick_cpu(8, cpu_options), 8
             warnings.append("Number of nodes unknown: 8 vCPU (4 ranks x 2 threads) as a start.")
         notes.append("Use an _mpi version (e.g. codeAster-17.0_mpi) with PETSc or MUMPS and "
-                     "MATR_DISTRIBUEE='OUI'. cloudHPC uses remaining vCPU as OpenMP threads.")
+                     "MATR_DISTRIBUEE='OUI'. mpi_nbcpu is used only if the .comm contains "
+                     "NB_SOUS_DOMAINE or NIVEAU_PARALLELISME; cloudHPC sets the OpenMP threads "
+                     "per process to vCPU / mpi_nbcpu / 2, so select at least 2 x mpi_nbcpu vCPU.")
         notes.append("RAM: code_aster is memory hungry. Start on highcpu, then standard, then "
                      "highmem if it fails for memory.")
         return {"family": family, "cpu": cpu, "ram": "highcpu", "ideal_cpu": needed,
@@ -513,6 +615,36 @@ def _suggest(family: str,
                           "hypercore."],
                 "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point; ask "
                              "the user about the model size."]}
+
+    if family == "codesaturne":
+        needed = max((cells or 0) // 50_000, 2) if cells else 8
+        cpu = _pick_cpu(needed, cpu_options)
+        notes.append("code_saturne runs one MPI process per physical core (1 thread each): use "
+                     "highcore or hypercore.")
+        if cells:
+            notes.append(f"Starting rule: ~50,000 cells per core -> {needed} cores for {cells:,} cells.")
+        else:
+            warnings.append("Number of cells unknown: 8 vCPU as a starting point.")
+        return {"family": family, "cpu": cpu, "ram": physical_ram(), "ideal_cpu": needed,
+                "notes": notes, "warnings": warnings}
+
+    if family == "swan":
+        return {"family": family, "cpu": _pick_cpu(8, cpu_options), "ram": "highcpu",
+                "notes": ["SWAN runs multi-threaded (OpenMP) on all vCPU: hyperthreaded types "
+                          "are fine."],
+                "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point."]}
+
+    if family == "xbeach":
+        return {"family": family, "cpu": _pick_cpu(8, cpu_options), "ram": physical_ram(),
+                "notes": ["XBeach (MPI) runs one process per physical core: use highcore or "
+                          "hypercore."],
+                "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point."]}
+
+    if family == "custom":
+        return {"family": family, "cpu": _pick_cpu(2, cpu_options), "ram": "standard",
+                "notes": ["Custom scripts use the cores only if they are written to run in "
+                          "parallel: size the machine on what the scripts do."],
+                "warnings": warnings}
 
     if family == "openlb":
         return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": "highcpu",

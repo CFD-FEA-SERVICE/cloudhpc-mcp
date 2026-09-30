@@ -338,7 +338,7 @@ def test_suggest_fds_single_mesh_decomposition():
            "uses_mpi_process": False, "uses_mult_id": False}
     s = advisor.suggest("fds", [1, 2, 4, 8, 16, 32, 48, 64, 96, 112], [], fds=fds)
     assert s["ideal_cpu"] == 66 * 2 and s["cpu"] == 112
-    assert any("decomposes" in n for n in s["notes"])
+    assert any("splits it" in n for n in s["notes"])
 
 
 def test_suggest_openfoam():
@@ -621,8 +621,11 @@ async def test_launch_checks_fds_cores_after_upload(api, tmp_path):
         "&MESH IJK=30,30,30, XB=0,1,0,1,0,1, MPI_PROCESS=0 /\n"
         "&MESH IJK=30,30,30, XB=1,2,0,1,0,1, MPI_PROCESS=1 /\n")
     assert (await server.upload_folder(str(case)))["uploaded"]
-    r = await server.launch_simulation("fds6.9.1", 2, "standard", "room", confirm=True)
+    r = await server.launch_simulation("fds6.9.1", 1, "standard", "room", confirm=True)
     assert any("low vCPU selected" in p for p in r["problems"])
+    # 2 processes on 1 physical core: allowed, with a speed note in the summary
+    r = await server.launch_simulation("fds6.9.1", 2, "standard", "room")
+    assert r["confirmation_required"] and "share each core" in r["summary"]
     r = await server.launch_simulation("fds6.9.1", 2, "highcore", "room")
     assert r["confirmation_required"]
     r = await server.launch_simulation("fds6.9.1", 4, "highcpu", "room")
@@ -755,8 +758,112 @@ async def test_solver_guide_tool():
     assert "error" in await server.solver_guide("unknownsolver")
     # the guides must not expose platform internals
     text = json.dumps(guides.GUIDES)
-    for leak in ("/opt/", "/home/", "mpirun", "sed -i", "lscpu"):
-        assert leak not in text
+    for leak in ("/opt/", "/home/", "/usr/", "mpirun", "mpiexec", "sed -i", "lscpu",
+                 "rm -rf", "foamDictionary", "runApplication", "runParallel", "OMP_NUM_THREADS",
+                 "nproc", "grep ", "ulimit", "#!/bin"):
+        assert leak not in text, leak
+
+
+async def test_solver_guides_from_scripts():
+    g = await server.solver_guide("fds6.9.1")
+    text = json.dumps(g)
+    assert ".stop" in text and "RESTART=.TRUE." in text and "DT_RESTART" in text
+    for name, fam in (("codeSaturne-9.0.1", "codesaturne"), ("SWAN-41.51", "swan"),
+                      ("XBeach_mpi", "xbeach"), ("custom-script-u24", "custom"),
+                      ("SU2_CFD8.3.0", "su2"), ("openFoam-v2406", "openfoam"),
+                      ("snappyHexMesh-v2412", "openfoam"), ("calculiX-2.21", "calculix"),
+                      ("codeAster-17.0_mpi", "code_aster")):
+        g = await server.solver_guide(name)
+        assert g["family"] == fam, name
+    g = await server.solver_guide("openfoam")
+    assert any("fvSchemes-transient" in o for o in g["options"])
+
+
+def test_fds_preflight_from_scripts(tmp_path):
+    (tmp_path / "room.fds").write_bytes(
+        "&HEAD CHID='room' TITLE='Stanza è' /\n&TIME T_END=60. /\n"
+        "&MESH IJK=60,60,30, XB=0,6,0,6,0,3 /\n&VENT XB=0,0,0,6,0,3, MB='XMIN' /\n"
+        "&RAMP ID='r', T=120., F=1. /\n&PART ID='p' /\n&TAIL /\n".encode("utf-8"))
+    (tmp_path / "hrr.csv").write_text("t,q\n")
+    info = advisor.inspect_case(str(tmp_path))
+    assert info["fds"]["non_ascii"] and info["fds"]["mesh_boundary_vents"]
+    assert not advisor.fds_auto_split(info["fds"])
+    text = " ".join(i["issue"] for i in errors.preflight(info))
+    for part in ("non-ASCII", "T_END", "hrr.csv", "&PART", "MB="):
+        assert part in text, part
+    (tmp_path / "room.restart").write_text("x")   # restart: nothing is removed
+    text = " ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(tmp_path))))
+    assert "hrr.csv" not in text
+
+
+def test_fds_auto_split_rules():
+    base = {"meshes": 1, "uses_mult_id": False, "uses_mpi_process": False,
+            "mesh_boundary_vents": False, "total_cells": 100_000}
+    assert advisor.fds_auto_split(base)
+    assert not advisor.fds_auto_split({**base, "total_cells": 20_000})
+    assert not advisor.fds_auto_split({**base, "uses_mult_id": True})
+    assert not advisor.fds_auto_split({**base, "meshes": 2})
+
+
+def test_new_family_detection_and_preflight(tmp_path):
+    sat = tmp_path / "sat"
+    (sat / "case1" / "DATA").mkdir(parents=True)
+    (sat / "case1" / "SRC").mkdir()
+    info = advisor.inspect_case(str(sat))
+    assert info["family"] == "codesaturne" and info["saturne_case"] == "case1"
+    sw = tmp_path / "sw"
+    sw.mkdir()
+    (sw / "a.swn").write_text("x")
+    (sw / "b.swn").write_text("x")
+    info = advisor.inspect_case(str(sw))
+    assert info["family"] == "swan"
+    assert any("only the first" in i["issue"] for i in errors.preflight(info))
+    xb = tmp_path / "xb"
+    xb.mkdir()
+    (xb / "params.txt").write_text("x")
+    assert advisor.inspect_case(str(xb))["family"] == "xbeach"
+    cu = tmp_path / "cu"
+    cu.mkdir()
+    (cu / "run.py").write_text("print(1)")
+    info = advisor.inspect_case(str(cu))
+    assert info["family"] == "custom"
+    assert any("requirements.txt" in i["issue"] for i in errors.preflight(info))
+    ccx = tmp_path / "ccx"
+    ccx.mkdir()
+    (ccx / "a_mesh.inp").write_text("*NODE\n1,0,0,0\n")
+    (ccx / "model.inp").write_text("*INCLUDE,INPUT=a_mesh.inp\n")
+    info = advisor.inspect_case(str(ccx))
+    assert any("*INCLUDE" in i["issue"] for i in errors.preflight(info))
+
+
+def test_code_aster_preflight_from_scripts(tmp_path):
+    (tmp_path / "study.export").write_text(
+        "P mpi_nbcpu 4\nF comm C:\\Users\\me\\study.comm D 1\nF mmed /home/me/mesh.med D 20\n")
+    (tmp_path / "study.comm").write_text("DEBUT()\nFIN()\n")
+    info = advisor.inspect_case(str(tmp_path))
+    assert info["export_inputs"] == ["mesh.med", "study.comm"] and not info["comm_parallel"]
+    text = " ".join(i["issue"] for i in errors.preflight(info))
+    assert "single MPI process" in text and "mesh.med" in text
+
+
+async def test_launch_code_aster_needs_two_vcpu_per_process(api, tmp_path):
+    d = tmp_path / "ca"
+    d.mkdir()
+    (d / "s.export").write_text("P mpi_nbcpu 4\nF comm s.comm D 1\nF mmed m.med D 20\n")
+    (d / "s.comm").write_text("MODI_MODELE(PARTITIONNEUR='METIS', NB_SOUS_DOMAINE=4)\n")
+    (d / "m.med").write_text("x")
+    assert (await server.upload_folder(str(d)))["uploaded"]
+    r = await server.launch_simulation("codeAster-17.0_mpi", 4, "highcpu", "ca", confirm=True)
+    assert any("at least 8 vCPU" in p for p in r["problems"])
+
+
+def test_diagnose_script_messages():
+    ids = {d["id"] for d in errors.diagnose(
+        "@@@ WARNING: FDS file with non ASCII characters - possible improper behaviour\n"
+        "@@@ ERROR: application not set in system/controlDict\n"
+        "@@@ ERROR: mesh script runs with nProc > 1\n"
+        "No parallelism detected ...\n")}
+    assert {"fds_non_ascii", "of_application", "of_nproc", "ca_serial"} <= ids
 
 
 async def test_launch_checks_dafoam_subdomains(api, tmp_path):
@@ -786,3 +893,97 @@ async def test_energyplus_version_and_templates(api, tmp_path):
     r = await server.upload_folder(str(d))
     assert any("HVACTemplate" in p["issue"] for p in r["problems"])
     assert advisor.family_of("foamExtend-5.0") == "openfoam"
+
+
+# ------------------------------------------------------------- public mode
+
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+
+def test_public_mode_exposes_only_guide_tools():
+    import subprocess
+    import sys
+    code = ("import asyncio; from cloudhpc_mcp import server; "
+            "print(sorted(t.name for t in asyncio.run(server.mcp.list_tools()))); "
+            "print('API keys' in server.mcp.instructions)")
+    env = {**os.environ, "CLOUDHPC_MCP_MODE": "public", "PYTHONPATH": SRC}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                         text=True, check=True).stdout.splitlines()
+    assert out[0] == str(sorted(server.PUBLIC_TOOLS))
+    assert out[1] == "True"
+
+
+def test_invalid_mode_is_rejected():
+    import subprocess
+    import sys
+    env = {**os.environ, "CLOUDHPC_MCP_MODE": "publik", "PYTHONPATH": SRC}
+    r = subprocess.run([sys.executable, "-c", "import cloudhpc_mcp.server"], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode != 0 and "must be local, remote or public" in r.stderr
+
+
+async def test_public_catalog_is_cached(api, monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC", True)
+    monkeypatch.setattr(server, "_CATALOG", {})
+    await server.list_solvers()
+    await server.list_machine_options()
+    await server.suggest_resources("fds", fds_meshes=2)
+    await server.list_solvers(search="openfoam")
+    catalog_calls = [c for c in api.calls if "view-" in c[1]]
+    assert len(catalog_calls) == 3  # scripts, cpu, ram once each
+
+
+async def test_public_catalog_serves_stale_on_api_error(monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC", True)
+    monkeypatch.setattr(server, "_CATALOG", {"scripts": (0.0, ["fds6.9.1"])})  # expired
+    down = httpx.MockTransport(lambda req: httpx.Response(503, json={"errors": ["down"]}))
+    monkeypatch.setattr(server, "client_for", lambda ctx=None: CloudHPCClient(
+        api_key="k", api_url=API, transport=down))
+    r = await server.list_solvers()
+    assert "error" not in r and "fds6.9.1" in json.dumps(r)
+
+
+def test_client_ip_uses_rightmost_forwarded_entry():
+    scope = {"headers": [(b"x-forwarded-for", b"6.6.6.6, 203.0.113.7")],
+             "client": ("169.254.1.1", 1)}
+    assert server.client_ip(scope) == "203.0.113.7"          # 6.6.6.6 is forgeable
+    assert server.client_ip(scope, trusted_proxies=1) == "6.6.6.6"
+    assert server.client_ip({"headers": [], "client": ("10.0.0.1", 5)}) == "10.0.0.1"
+
+
+async def test_rate_limit_per_ip():
+    now = [1000.0]
+    seen = []
+
+    async def app(scope, receive, send):
+        seen.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    mw = server.PerIPRateLimit(app, per_minute=3, clock=lambda: now[0])
+
+    async def hit(ip):
+        sent = []
+
+        async def send(m):
+            sent.append(m)
+
+        await mw({"type": "http", "path": "/mcp", "headers": [(b"x-forwarded-for", ip.encode())]},
+                 None, send)
+        return sent[0]["status"]
+
+    assert [await hit("1.1.1.1") for _ in range(4)] == [200, 200, 200, 429]
+    assert await hit("2.2.2.2") == 200          # other clients unaffected
+    now[0] += 61
+    assert await hit("1.1.1.1") == 200          # window passed
+
+
+async def test_catalog_error_has_no_storage_hint(monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC", True)
+    monkeypatch.setattr(server, "_CATALOG", {})
+    bad = httpx.MockTransport(lambda req: httpx.Response(
+        403, json={"errors": ["A technical problem has occurred, try again later."]}))
+    monkeypatch.setattr(server, "client_for", lambda ctx=None: CloudHPCClient(
+        api_key="k", api_url=API, transport=bad))
+    for r in (await server.list_solvers(), await server.list_machine_options(),
+              await server.suggest_resources("fds", fds_meshes=2)):
+        assert "error" in r and "hint" not in r and "solver_guide" in r["note"]

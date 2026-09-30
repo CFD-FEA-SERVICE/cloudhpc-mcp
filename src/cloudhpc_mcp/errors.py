@@ -72,9 +72,9 @@ CATALOG: list[dict[str, str]] = [
      "anchor": "scalability_issue_with_mpi_process"},
     {"id": "fds_low_vcpu", "severity": "error",
      "pattern": r"low vCPU selected|Number of MESHES higher than available CORES",
-     "cause": "More meshes/MPI groups than CPU cores.",
-     "fix": "Increase vCPU (on highcpu/standard/highmem/hypercpu cores = vCPU/2) or group "
-            "meshes with MPI_PROCESS.",
+     "cause": "More meshes/MPI groups than vCPU.",
+     "fix": "Select at least one vCPU per mesh/MPI group (two per group on highcpu/standard/"
+            "highmem/hypercpu for best speed) or group meshes with MPI_PROCESS.",
      "anchor": "scalability_issue_with_mpi_process"},
     {"id": "fds_warnings", "severity": "warning",
      "pattern": r"no other WARNING messages showed",
@@ -91,6 +91,32 @@ CATALOG: list[dict[str, str]] = [
      "cause": "Many pressure zones: the run may scale poorly.",
      "fix": "Add MINIMUM_ZONE_VOLUME=1.0 to &MISC (NO_PRESSURE_ZONES=T only for debugging).",
      "anchor": "high_number_of_pressure_zones"},
+    {"id": "fds_non_ascii", "severity": "warning",
+     "pattern": r"FDS file with non ASCII characters",
+     "cause": "The .fds file contains non-ASCII characters (accents, symbols, special quotes).",
+     "fix": "Remove them (also from comments and IDs) and save the file as plain text/UTF-8 "
+            "without special characters: FDS may misread the input.",
+     "anchor": "fds_incorrect_settings"},
+    {"id": "fds_mult_mesh", "severity": "warning",
+     "pattern": r"MULT applied to MESH",
+     "cause": "&MESH uses MULT_ID: cloudHPC cannot count the multiplied meshes correctly.",
+     "fix": "Write the meshes explicitly (or check vCPU against the real number of meshes).",
+     "anchor": "fds_incorrect_settings"},
+    {"id": "fds_part", "severity": "warning",
+     "pattern": r"PART detected - FDS scalability may be poor",
+     "cause": "Lagrangian particles (&PART) reduce FDS parallel scalability.",
+     "fix": "Expect lower speed-up with many vCPU; balance meshes carefully.",
+     "anchor": ""},
+    {"id": "fds_ramp_tend", "severity": "warning",
+     "pattern": r"max\(RAMP_T\) .*> T_END",
+     "cause": "A &RAMP is defined beyond T_END: the end time may be shorter than intended.",
+     "fix": "Check T_END on &TIME against the ramps (HRR curves, activations).",
+     "anchor": ""},
+    {"id": "fds_evac_restart", "severity": "info",
+     "pattern": r"RESTART NOT POSSIBLE FOR FDS\+EVAC",
+     "cause": "FDS+EVAC cases cannot be restarted.",
+     "fix": "Relaunch the case from the beginning.",
+     "anchor": ""},
     {"id": "fds_devc_amd", "severity": "warning",
      "pattern": r"DEVC for .* may slow down your simulation",
      "cause": "VISIBILITY / RADIATIVE HEAT FLUX / GAUGE HEAT FLUX GAS devices slow down AMD CPUs.",
@@ -103,7 +129,7 @@ CATALOG: list[dict[str, str]] = [
      "fix": "The case folder must contain 0, constant and system at its root.",
      "anchor": "incorrect_dictionary"},
     {"id": "of_nproc", "severity": "error",
-     "pattern": r"(openFoam|snappy) script runs with nProc > 1",
+     "pattern": r"(openFoam|snappy|mesh) script runs with nProc > 1",
      "cause": "OpenFOAM always runs in parallel on cloudHPC.",
      "fix": "Select at least 2 vCPU on highcore/hypercore (4 on highcpu/standard/highmem).",
      "anchor": "multi-core_analysis"},
@@ -112,6 +138,56 @@ CATALOG: list[dict[str, str]] = [
      "cause": "snappyHexMesh failed (RAM, STL geometry, settings).",
      "fix": "Read log.snappyHexMesh in the results; if it is a memory problem use more RAM.",
      "anchor": "snappyhexmesh_general_error"},
+    {"id": "of_blockmesh", "severity": "error",
+     "pattern": r"blockMesh failure",
+     "cause": "blockMesh did not finish.",
+     "fix": "Read log.blockMesh in the results (blockMeshDict vertices, blocks, patches).",
+     "anchor": ""},
+    {"id": "of_allboundary", "severity": "error",
+     "pattern": r"allBoundary failure",
+     "cause": "The generated mesh still has the default 'allBoundary' patch: the boundaries "
+              "were not assigned.",
+     "fix": "Check the patch names/regions in the meshing dictionaries and createPatchDict.",
+     "anchor": ""},
+    {"id": "of_ncc", "severity": "error",
+     "pattern": r"createNonConformalCouples failure",
+     "cause": "createNonConformalCouples failed.",
+     "fix": "Read log.createNonConformalCouples in the results.",
+     "anchor": ""},
+    {"id": "of_application", "severity": "error",
+     "pattern": r"application not set in system/controlDict",
+     "cause": "system/controlDict has no 'application' entry, so no solver can be started.",
+     "fix": "Add e.g. 'application simpleFoam;' to system/controlDict.",
+     "anchor": "controldict"},
+    {"id": "of_cores", "severity": "error",
+     "pattern": r"required cores \[\d+\] higher than available",
+     "cause": "decomposeParDict uses a method cloudHPC does not adapt and asks for more "
+              "subdomains than the physical cores selected.",
+     "fix": "Use method scotch or hierarchical (adapted automatically), or select vCPU on "
+            "highcore/hypercore equal to numberOfSubdomains.",
+     "anchor": "decomposepardict"},
+    {"id": "of_multiregion", "severity": "warning",
+     "pattern": r"Multi-Region cases do not have decomposeParDict adaptation",
+     "cause": "Multi-region case: the region decomposeParDict files are not adapted.",
+     "fix": "Set numberOfSubdomains in every region's decomposeParDict equal to the physical "
+            "cores selected.",
+     "anchor": "decomposepardict"},
+    {"id": "of_layout", "severity": "info",
+     "pattern": r"Incorrect OF dictionary - (Reconstructing folders|found)",
+     "cause": "The case was not at the root of the upload; cloudHPC rearranged it.",
+     "fix": "Upload 0, constant and system at the root of the case folder next time.",
+     "anchor": "incorrect_dictionary"},
+    {"id": "of_default_decompose", "severity": "info",
+     "pattern": r"missing decomposeParDict file - using default one",
+     "cause": "No system/decomposeParDict: a default one was added.",
+     "fix": "Nothing to do; add your own decomposeParDict to control the method.",
+     "anchor": "decomposepardict"},
+    {"id": "of_incomplete_write", "severity": "info",
+     "pattern": r"Incomplete file write .* Clean and reexecuting",
+     "cause": "The last time step was written only partly (e.g. machine interrupted); it was "
+              "removed and the run resumed automatically.",
+     "fix": "Nothing to do.",
+     "anchor": ""},
     {"id": "of_polymesh", "severity": "warning",
      "pattern": r"polyMesh folder not found",
      "cause": "constant/polyMesh missing: the solver has no mesh.",
@@ -149,12 +225,34 @@ CATALOG: list[dict[str, str]] = [
      "cause": "openTELEMAC: no .cas steering file in the case folder.",
      "fix": "Upload the .cas steering file and the files it references in the case folder.",
      "anchor": ""},
+    {"id": "calculix_inp", "severity": "error",
+     "pattern": r"No INP file detected",
+     "cause": "CalculiX: no .inp input file in the case folder.",
+     "fix": "Upload the .inp file at the root of the case folder.",
+     "anchor": ""},
+    {"id": "swan_swn", "severity": "error",
+     "pattern": r"No SWN file detected",
+     "cause": "SWAN: no .swn input file in the case folder.",
+     "fix": "Upload the .swn command file and the files it references in the case folder.",
+     "anchor": ""},
+    {"id": "su2_cfg", "severity": "error",
+     "pattern": r"No CFG file found",
+     "cause": "SU2: no .cfg configuration file in the case folder.",
+     "fix": "Upload the .cfg file and the mesh it references in the case folder.",
+     "anchor": ""},
     # -------------------------------------------------------- code_aster
     {"id": "ca_export", "severity": "error",
      "pattern": r"no export file detected",
      "cause": "code_aster .export file missing.",
      "fix": "Upload .export, .comm and the .med/.unv mesh (see the code_aster template).",
      "anchor": "export_file_missing"},
+    {"id": "ca_serial", "severity": "info",
+     "pattern": r"No parallelism detected",
+     "cause": "code_aster ran as a single MPI process: the .comm has no NB_SOUS_DOMAINE or "
+              "NIVEAU_PARALLELISME, so mpi_nbcpu is not used.",
+     "fix": "For MPI runs use an _mpi version, add the parallel keywords to the .comm and set "
+            "mpi_nbcpu in the .export.",
+     "anchor": ""},
 ]
 
 _COMPILED = [(e, re.compile(e["pattern"], re.IGNORECASE)) for e in CATALOG]
@@ -183,6 +281,24 @@ INVALID_NAME_CHARS = set(",()'$~\"#*?")
 
 def bad_name(name: str) -> list[str]:
     return sorted({c for c in name if c in INVALID_NAME_CHARS or c.isspace()})
+
+
+# files kept when an FDS case starts without restart files (everything else in the
+# case folder is removed before the run)
+_FDS_KEEP_EXT = (".fds", ".pyrofloors", ".pyrogeom", ".bingeom", ".dat", ".bdf", ".py",
+                 ".txt", ".backup", ".sh")
+_UPLOAD_LEFTOVERS = ("cloudhpc", "upload.tar.gz", "cpu.csv", "ram.csv", "totcpu.csv")
+
+
+def _fds_removed_files(folder: str) -> list[str]:
+    out = []
+    for name in sorted(os.listdir(folder)):
+        low = name.lower()
+        if name.startswith(".") or low.endswith(_FDS_KEEP_EXT) or low.startswith("fds") \
+                or low.startswith(_UPLOAD_LEFTOVERS) or low.endswith(".tar.gz"):
+            continue
+        out.append(name + ("/" if os.path.isdir(os.path.join(folder, name)) else ""))
+    return out
 
 
 def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
@@ -230,6 +346,28 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                 add("warning", "DEVC with VISIBILITY / RADIATIVE HEAT FLUX / GAUGE HEAT FLUX GAS slow "
                                "down AMD CPUs: prefer hypercpu/hypercore if delivery time matters.",
                     "devc_affecting_performances")
+            if fds.get("non_ascii"):
+                add("warning", "The .fds file contains non-ASCII characters (accents, symbols, "
+                               "special quotes): FDS may misread them. Remove them, also from "
+                               "comments and IDs.", "fds_incorrect_settings")
+            if fds.get("has_part"):
+                add("info", "&PART (particles) found: FDS scales less well with many vCPU.", "")
+            if fds.get("t_end") is not None and fds.get("max_ramp_t") is not None \
+                    and fds["max_ramp_t"] > fds["t_end"]:
+                add("warning", f"A &RAMP goes to T={fds['max_ramp_t']:g} s but T_END is "
+                               f"{fds['t_end']:g} s: check the end time.", "")
+            if fds.get("meshes") == 1 and fds.get("mesh_boundary_vents"):
+                add("info", "Single &MESH with &VENT MB= (mesh boundary vents): it will not be "
+                            "split automatically across the cores.", "")
+            restarting = bool(glob.glob(os.path.join(folder, "*.restart")))
+            if not restarting:
+                extra = _fds_removed_files(folder)
+                if extra:
+                    add("warning", f"Without .restart files the case folder is cleaned before FDS "
+                                   f"starts: {', '.join(extra[:8])}{'...' if len(extra) > 8 else ''} "
+                                   "would be removed. Inputs kept: .fds, .dat, .bdf, .txt, .py, .sh "
+                                   "and PyroSim geometry files (.pyrofloors, .pyrogeom, .bingeom). "
+                                   "Rename other files FDS needs to one of these extensions.", "")
             if not re.search(r"MINIMUM_ZONE_VOLUME", text, re.IGNORECASE):
                 add("info", "Consider MINIMUM_ZONE_VOLUME=1.0 in &MISC to avoid many pressure zones.",
                     "high_number_of_pressure_zones")
@@ -247,13 +385,31 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                 m = re.search(r"^\s*method\s+(\w+)\s*;", f.read(), re.MULTILINE)
             if m and m.group(1) not in ("scotch", "hierarchical"):
                 add("error", f"decomposeParDict method is '{m.group(1)}': use scotch or hierarchical "
-                             "so cloudHPC can set the subdomains.", "decomposepardict")
+                             "so cloudHPC can set the subdomains (other methods are left as they "
+                             "are and must match the physical cores selected).", "decomposepardict")
+        if glob.glob(os.path.join(folder, "system", "*", "decomposeParDict")):
+            add("warning", "Multi-region case: the region decomposeParDict files are not adapted "
+                           "automatically; numberOfSubdomains must equal the physical cores "
+                           "selected.", "decomposepardict")
+        if os.path.exists(os.path.join(folder, "Allrun")):
+            add("info", "Allrun found: it replaces cloudHPC's standard meshing/solving sequence "
+                        "(decomposeParDict is still adapted first).", "")
+        orig = [d for d in ("0.orig", "0.org") if os.path.isdir(os.path.join(folder, d))]
+        if orig and os.path.isdir(os.path.join(folder, "0")):
+            add("info", f"Both 0/ and {orig[-1]}/ exist: 0/ is replaced by {orig[-1]}/ at start.", "")
         cd = os.path.join(folder, "system", "controlDict")
         if os.path.exists(cd):
             with open(cd, "r", errors="replace") as f:
                 m = re.search(r"^\s*startFrom\s+(\w+)\s*;", f.read(), re.MULTILINE)
+            with open(cd, "r", errors="replace") as f:
+                cd_text = f.read()
             if m and m.group(1) != "latestTime":
                 add("info", f"startFrom is '{m.group(1)}': cloudHPC sets it to latestTime.",
+                    "controldict")
+            if not re.search(r"^\s*application\s+\S+\s*;", cd_text, re.MULTILINE) \
+                    and not os.path.exists(os.path.join(folder, "Allrun")):
+                add("warning", "system/controlDict has no 'application' entry: the solver run "
+                               "stops unless you only generate the mesh with a mesher entry.",
                     "controldict")
         if not (os.path.isdir(os.path.join(folder, "0")) or os.path.isdir(os.path.join(folder, "0.orig"))):
             add("warning", "No 0/ (or 0.orig/) folder with initial conditions.", "incorrect_dictionary")
@@ -276,7 +432,7 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                     "but a clean copy of the case uploads faster.", "incorrect_compressed_file")
 
     many = info.get("input_files") or []
-    if fam in ("contam", "energyplus", "telemac") and len(many) > 1:
+    if fam in ("contam", "energyplus", "telemac", "swan", "su2") and len(many) > 1:
         add("warning", f"{len(many)} input files found ({', '.join(many[:5])}): only the first "
                        f"in alphabetical order ({many[0]}) is run. Keep one per case folder.", "")
 
@@ -331,11 +487,42 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         if starters and not keys and not engines:
             add("error", "Starter *_0000.rad found but no engine file (*_0001.rad).", "")
 
+    if fam == "calculix" and len(many) > 1:
+        add("warning", f"{len(many)} .inp files found ({', '.join(many[:5])}): only the first in "
+                       f"alphabetical order ({many[0]}) is run. If the others are *INCLUDE files, "
+                       "give them another extension (e.g. .msh, .nam) or make sure the main file "
+                       "sorts first.", "")
+
+    if fam == "codesaturne" and info.get("saturne_case") is None:
+        add("error", "No code_saturne case (a folder with DATA and SRC) found at the root or one "
+                     "level down.", "")
+
+    if fam == "xbeach" and not os.path.exists(os.path.join(folder, "params.txt")):
+        add("error", "XBeach needs params.txt at the root of the case folder.", "")
+
+    if fam == "custom":
+        py = [f for f in info.get("scripts", []) if f.endswith(".py")]
+        if py and not info.get("has_requirements"):
+            add("info", "Python scripts without requirements.txt: only the standard library "
+                        "(and preinstalled system packages) will be available.", "")
+
     if fam == "code_aster":
+        nb = info.get("mpi_nbcpu")
+        if nb and nb > 1 and not info.get("comm_parallel"):
+            add("warning", f"mpi_nbcpu is {nb} but the .comm has no NB_SOUS_DOMAINE or "
+                           "NIVEAU_PARALLELISME: the run uses a single MPI process.", "")
+        present = set(os.listdir(folder))
+        missing = [f for f in info.get("export_inputs", []) if f not in present]
+        if missing:
+            add("error", f"Files referenced in the .export are not in the case folder: "
+                         f"{', '.join(missing[:6])}. Paths in the .export are reduced to the "
+                         "file name, so every input must be at the root of the case folder.",
+                "export_file_missing")
         if not glob.glob(os.path.join(folder, "*.export")):
             add("error", "No .export file: code_aster needs .export, .comm and .med/.unv.",
                 "export_file_missing")
-        if not (glob.glob(os.path.join(folder, "*.med")) or glob.glob(os.path.join(folder, "*.unv"))):
+        if not (glob.glob(os.path.join(folder, "*.med")) or glob.glob(os.path.join(folder, "*.unv"))
+                or glob.glob(os.path.join(folder, "attachments", "*.med"))):
             add("warning", "No .med or .unv mesh found in the folder.", "code_aster_settings")
 
     return issues
