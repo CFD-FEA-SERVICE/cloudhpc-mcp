@@ -995,3 +995,46 @@ async def test_openfoam_guide_explains_physical_cores():
     assert any("16 physical cores" in f["a"] for f in g["faq"])
     assert "cores" not in await server.solver_guide("fds")
     assert "vCPU / 2" in server.PUBLIC_INSTRUCTIONS and "16 processes" in server.INSTRUCTIONS
+
+
+def test_fds_progress_from_output():
+    text = ("TIME string: &TIME T_END=3600. /\n"
+            "** YES RESTART FILE - YES MISC => ADD RESTART **\n"
+            " Time Step:   1200, Simulation Time:   1500.25 s\n"
+            " Time Step:   1300, Simulation Time:   1585.10 s\n")
+    p = server._fds_progress(text)
+    assert p["percent"] == 44.0 and p["t_end_s"] == 3600.0 and p["restarts"] == 1
+    d = server._diagnosis({"script": "fds6.9.1", "status": 30, "output": text})
+    assert d["fds_progress"]["simulated_time_s"] == 1585.10
+    assert any(f["id"] == "fds_restarted" for f in d["diagnosis"])
+    assert server._fds_progress("no fds here") is None
+
+
+def test_fds_dt_restart_and_mpi_grouping_preflight(tmp_path):
+    meshes = "".join(f"&MESH IJK=20,20,20, XB={i},{i+1},0,1,0,1, MPI_PROCESS={i // 4} /\n"
+                     for i in range(16))
+    (tmp_path / "m.fds").write_text("&HEAD CHID='m' /\n&TIME T_END=60. /\n" + meshes + "&TAIL /\n")
+    info = advisor.inspect_case(str(tmp_path))
+    assert info["fds"]["dt_restart"] is None
+    text = " ".join(i["issue"] for i in errors.preflight(info))
+    assert "DT_RESTART" in text and "16 meshes are grouped into 4 MPI processes" in text
+    (tmp_path / "m.fds").write_text("&DUMP DT_RESTART=600. /\n" + meshes)
+    assert advisor.inspect_case(str(tmp_path))["fds"]["dt_restart"] == 600.0
+
+
+async def test_launch_notes_missing_dt_restart_on_preemptible(api, tmp_path):
+    case = tmp_path / "nodump"
+    case.mkdir()
+    (case / "a.fds").write_text("&MESH IJK=30,30,30, XB=0,1,0,1,0,1 /\n"
+                                "&MESH IJK=30,30,30, XB=1,2,0,1,0,1 /\n")
+    assert (await server.upload_folder(str(case)))["uploaded"]
+    r = await server.launch_simulation("fds6.9.1", 4, "highcpu", "nodump")
+    assert "DT_RESTART" in r["summary"]
+    r = await server.launch_simulation("fds6.9.1", 4, "highcpu", "nodump", regular_instance=True)
+    assert "DT_RESTART" not in r["summary"]
+
+
+async def test_fds_guide_monitoring_and_outputs():
+    g = await server.solver_guide("fds")
+    assert any("T_END" in m for m in g["monitoring"]) and "7-Zip" in g["outputs"]
+    assert any("NOTHING TO DO" in r for r in g["restart"])

@@ -112,6 +112,18 @@ CATALOG: list[dict[str, str]] = [
      "cause": "A &RAMP is defined beyond T_END: the end time may be shorter than intended.",
      "fix": "Check T_END on &TIME against the ramps (HRR curves, activations).",
      "anchor": ""},
+    {"id": "fds_no_restart_files", "severity": "info",
+     "pattern": r"NO RESTART FILE => NOTHING TO DO",
+     "cause": "Normal check at start: no .restart files, so the run starts from the beginning.",
+     "fix": "Nothing to do. It is not an error.",
+     "anchor": ""},
+    {"id": "fds_restarted", "severity": "info",
+     "pattern": r"YES RESTART FILE .*=> ADD RESTART|\*\* RESTART TRUE \*\*",
+     "cause": "The run resumed from .restart files (e.g. after a preemptible-instance restart "
+              "or a relaunch).",
+     "fix": "Nothing to do: the restart is automatic. Time steps after the last restart dump "
+            "are recomputed.",
+     "anchor": ""},
     {"id": "fds_evac_restart", "severity": "info",
      "pattern": r"RESTART NOT POSSIBLE FOR FDS\+EVAC",
      "cause": "FDS+EVAC cases cannot be restarted.",
@@ -350,6 +362,17 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                 add("warning", "The .fds file contains non-ASCII characters (accents, symbols, "
                                "special quotes): FDS may misread them. Remove them, also from "
                                "comments and IDs.", "fds_incorrect_settings")
+            if fds.get("dt_restart") is None:
+                add("info", "No DT_RESTART on &DUMP: if a preemptible (non-regular) instance is "
+                            "restarted, FDS starts again from the beginning. Set DT_RESTART so "
+                            "restart files are written every few hours of run time (very short "
+                            "intervals slow the run and fill the disk).", "")
+            groups, meshes = fds.get("mpi_groups") or 0, fds.get("meshes") or 0
+            if fds.get("uses_mpi_process") and 0 < groups < meshes:
+                add("info", f"{meshes} meshes are grouped into {groups} MPI processes with "
+                            f"MPI_PROCESS: the run uses {groups} processes, whatever the vCPU "
+                            "selected. Check MPI_PROCESS if you expected one process per mesh "
+                            "(GUIs may write it differently when exporting vs running).", "")
             if fds.get("has_part"):
                 add("info", "&PART (particles) found: FDS scales less well with many vCPU.", "")
             if fds.get("t_end") is not None and fds.get("max_ramp_t") is not None \

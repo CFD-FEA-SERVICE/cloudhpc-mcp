@@ -133,6 +133,7 @@ def inspect_fds(path: str) -> dict[str, Any]:
         "has_part": bool(re.search(r"^\s*&PART\b", text, re.IGNORECASE | re.MULTILINE)),
         "t_end": _t_end(text),
         "max_ramp_t": _max_ramp_t(text),
+        "dt_restart": _dt_restart(text),
         "evacuation": bool(re.search(r"&MESH\b[^/]*?\bEVACUATION\s*=\s*\.?T", text, re.IGNORECASE | re.DOTALL)),
     }
 
@@ -146,6 +147,11 @@ def _num(s: str) -> float | None:
 
 def _t_end(text: str) -> float | None:
     m = re.search(r"\bT_END\s*=\s*([-+0-9.eEdD]+)", text)
+    return _num(m.group(1)) if m else None
+
+
+def _dt_restart(text: str) -> float | None:
+    m = re.search(r"&DUMP\b[^/]*?\bDT_RESTART\s*=\s*([-+0-9.eEdD]+)", text, re.IGNORECASE | re.DOTALL)
     return _num(m.group(1)) if m else None
 
 

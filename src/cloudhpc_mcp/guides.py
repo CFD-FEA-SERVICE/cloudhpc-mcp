@@ -21,6 +21,8 @@ GUIDES: dict[str, dict[str, Any]] = {
             "One .fds file in the case folder (.FDS is accepted too). With several, only the "
             "first in alphabetical order is run. PyroSim .psm files are not accepted: export "
             "the .fds.",
+            "PyroSim: use the file written by File > Export > FDS File and check MPI_PROCESS: "
+            "it decides how many MPI processes run.",
             "Keep the file plain ASCII: accents, symbols or special quotes (also in comments "
             "and IDs) trigger a warning and may be misread by FDS.",
             "Auxiliary inputs must have one of these extensions to be kept: .dat, .bdf, .txt, "
@@ -53,13 +55,32 @@ GUIDES: dict[str, dict[str, Any]] = {
             "files are present, RESTART=.TRUE. is added to &MISC automatically (a &MISC line "
             "is created if missing): do not edit the file and do not delete any .stop file.",
             "FDS writes .restart files only if DT_RESTART is set on &DUMP: set it for long "
-            "runs.",
+            "runs, especially on preemptible instances (they can be restarted by the provider, "
+            "typically up to about once a day). Aim for a restart file every few hours of run "
+            "time: very short intervals slow the run and fill the disk.",
+            "After an automatic restart the log shows the restart and FDS continues from the "
+            "last restart file: nothing to do. 'NO RESTART FILE => NOTHING TO DO' at start is a "
+            "normal check, not an error.",
             "Without .restart files the run starts from the beginning and previous outputs "
             "are removed.",
             "Relaunch with the same vCPU and RAM type: a different mesh split discards the "
             "restart files.",
             "FDS+EVAC cases cannot be restarted.",
         ],
+        "monitoring": [
+            "Progress = simulated time / T_END: the output of the run shows the FDS time steps "
+            "and simulated time.",
+            "While the run is RUNNING, Smokeview on the remote desktop shows the results live "
+            "(activated accounts).",
+            "If a run seems slow with RAM to spare, the cause is usually the time step: fine "
+            "cells mean small time steps (see 'Controlling the Time Step' in the FDS User "
+            "Guide).",
+        ],
+        "outputs": "FDS.tar.gz in the case folder contains all FDS outputs. Extract it with "
+                   "7-Zip or similar (on Windows twice: .gz then .tar). For PyroSim's results "
+                   "viewer, extract it in the PyroSim results folder of the model. The size "
+                   "depends mostly on the outputs requested (SLCF, BNDF, DT_ intervals), not "
+                   "only on the mesh.",
         "parallel": "One MPI process per &MESH or MPI_PROCESS group. Minimum: vCPU >= groups "
                     "(otherwise 'low vCPU selected'). Best speed: vCPU = groups x 2 on "
                     "highcpu/standard/highmem/hypercpu, vCPU = groups on highcore/hypercore.",

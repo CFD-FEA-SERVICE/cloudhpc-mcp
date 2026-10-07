@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import time
 from collections import deque
@@ -260,6 +261,24 @@ def _storage_item(i: dict) -> dict:
     return out
 
 
+def _fds_progress(text: str) -> dict | None:
+    """Simulated time vs T_END from the FDS output (the run log prints both)."""
+    tend = re.search(r"T_END\s*=\s*([0-9.eEdD+-]+)", text)
+    times = re.findall(r"Simulation Time:\s*([0-9.eE+-]+)\s*s", text)
+    if not tend or not times:
+        return None
+    try:
+        t_end = float(tend.group(1).replace("D", "E").replace("d", "e"))
+        t_now = float(times[-1])
+    except ValueError:
+        return None
+    if t_end <= 0:
+        return None
+    return {"simulated_time_s": t_now, "t_end_s": t_end,
+            "percent": round(min(100.0, 100.0 * t_now / t_end), 1),
+            "restarts": len(re.findall(r"=> ADD RESTART|\*\* RESTART TRUE \*\*", text))}
+
+
 def _diagnosis(s: dict) -> dict:
     """Scan the simulation output/log for known errors (docs.cloudhpc.cloud/errors)."""
     text = "\n".join(str(s.get(k) or "") for k in ("output", "logs"))
@@ -273,6 +292,10 @@ def _diagnosis(s: dict) -> dict:
         out["suggestion"] = (
             f"Relaunch the same case with the same vCPU on '{nxt}'." if nxt else
             "Increase vCPU (RAM grows with vCPU) or reduce the model size.")
+    if advisor.family_of(str(s.get("script", ""))) == "fds":
+        prog = _fds_progress(text)
+        if prog:
+            out["fds_progress"] = prog
     if s.get("status") == 10 and any(f["severity"] == "error" for f in found):
         out["warning"] = ("Status is COMPLETED but the output contains errors: the solver "
                           "probably did not finish correctly.")
@@ -623,6 +646,11 @@ async def launch_simulation(
             problems.append(p)
         if w:
             warnings.append(w)
+    if fam == "fds" and not regular_instance and case.get("fds") \
+            and case["fds"].get("dt_restart") is None:
+        warnings.append("The .fds has no DT_RESTART: on a preemptible instance a restart "
+                        "begins again from time 0. Add DT_RESTART on &DUMP, or use "
+                        "regular_instance.")
     if fam == "code_aster" and case.get("comm_parallel") and case.get("mpi_nbcpu"):
         if cpu < 2 * case["mpi_nbcpu"]:
             problems.append(f"code_aster: mpi_nbcpu is {case['mpi_nbcpu']} in the .export, so at "
@@ -692,7 +720,8 @@ async def get_simulation(simulation_id: int, include_log: bool = False, ctx: Con
     """Get status and details of a simulation.
 
     include_log: add the last output/log lines and a diagnosis of known cloudHPC
-    errors and warnings with their fix. Use it whenever a run ends, since a run
+    errors and warnings with their fix. For FDS it also adds fds_progress
+    (simulated time vs T_END, percent, automatic restarts). Use it whenever a run ends, since a run
     can be COMPLETED even if the solver failed.
     """
     c = client_for(ctx)
@@ -811,7 +840,9 @@ async def open_remote_desktop(simulation_id: int, ctx: Context = None) -> dict:
         return _err(e)
     if s.get("status") != 30 or not s.get("vnc_url"):
         return {"error": "Remote desktop is available only while the simulation is RUNNING."}
-    return {"url": s["vnc_url"], "note": "Short-lived link; ask again if it expires."}
+    return {"url": s["vnc_url"],
+            "note": "Short-lived link; ask again if it expires. The desktop needs a few "
+                    "minutes after the run starts: if it does not open yet, retry shortly."}
 
 
 @mcp.tool(annotations=READ)
