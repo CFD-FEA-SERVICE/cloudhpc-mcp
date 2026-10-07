@@ -59,7 +59,10 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
    suggest_resources. Explain the suggestion briefly (vCPU, RAM type, why).
    RAM types: highcpu < standard < highmem use the same CPUs with 1 to 8 GB
    per vCPU and hyperthreading; highcore/hypercore use physical cores only
-   (hypercore = faster CPU generation). OpenFOAM and other MPI-only solvers
+   (hypercore = faster CPU generation). Physical cores = vCPU on
+   highcore/hypercore but vCPU / 2 on highcpu/standard/highmem/hypercpu.
+   MPI-only solvers (OpenFOAM & co.) run one process per physical core, so
+   32 vCPU on standard give 16 processes (numberOfSubdomains set to 16). OpenFOAM and other MPI-only solvers
    must use highcore or hypercore. For FDS/CalculiX/code_aster start on
    highcpu and move to standard, then highmem, only after a memory error.
 3. Upload: local mode -> upload_folder (tar.gz of the folder content into a
@@ -106,6 +109,10 @@ general "how do I..." questions; it has no access to any user account.
   and RAM types. suggest_resources: vCPU and RAM type for a model size.
   RAM types: highcpu < standard < highmem use the same CPUs with 1 to 8 GB
   per vCPU and hyperthreading; highcore/hypercore use physical cores only.
+  Physical cores = vCPU on highcore/hypercore, vCPU / 2 on the others.
+  OpenFOAM and other MPI-only solvers run one process per physical core: if
+  a user reports fewer processes or subdomains than vCPU selected (e.g. 16
+  with 32 vCPU), explain this first and suggest highcore or hypercore.
   OpenFOAM and other MPI-only solvers must use highcore or hypercore. For
   FDS/CalculiX/code_aster start on highcpu and move to standard, then
   highmem, only after a memory error.
@@ -384,6 +391,10 @@ async def list_machine_options(ctx: Context = None) -> dict:
             "hypercore": "newer/faster CPU generation, physical cores only",
             "basegpu": "GPU instance",
         },
+        "physical_cores": "physical cores = vCPU on highcore/hypercore, vCPU / 2 on highcpu, "
+                          "standard, highmem, hypercpu. MPI-only solvers (OpenFOAM, DAFoam, "
+                          "SU2, code_saturne, XBeach, TELEMAC, LIGGGHTS) run one process per "
+                          "physical core.",
     }
 
 

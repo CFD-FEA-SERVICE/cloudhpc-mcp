@@ -410,5 +410,42 @@ EXTRA_FAMILIES = {
 }
 
 
+# vCPU vs physical cores: the most common source of "wrong number of processes"
+CORES_RULE = (
+    "Physical cores = vCPU on highcore/hypercore, but vCPU / 2 on the hyperthreaded types "
+    "(highcpu, standard, highmem, hypercpu). This solver runs one MPI process per PHYSICAL "
+    "core, so on a hyperthreaded type it uses half the vCPU selected. Example: 32 vCPU on "
+    "standard = 16 physical cores = 16 MPI processes (numberOfSubdomains is set to 16); 32 vCPU "
+    "on highcore or hypercore = 32 processes. To run N processes select N vCPU on highcore or "
+    "hypercore."
+)
+PHYSICAL_CORE_FAMILIES = {"openfoam", "dafoam", "su2", "codesaturne", "xbeach", "telemac",
+                          "liggghts"}
+
+FAQ: dict[str, list[dict[str, str]]] = {
+    "openfoam": [
+        {"q": "I selected 32 vCPU and set numberOfSubdomains 32, but the run used 16 "
+              "subdomains / my decomposeParDict was changed.",
+         "a": "Expected on a hyperthreaded RAM type (highcpu, standard, highmem, hypercpu): "
+              "32 vCPU there are 16 physical cores and OpenFOAM uses physical cores only, so "
+              "cloudHPC sets numberOfSubdomains to 16 (methods scotch and hierarchical are "
+              "adapted automatically). To run 32 subdomains select 32 vCPU on highcore or "
+              "hypercore; the dictionary is then set to 32. Nothing else to change."},
+        {"q": "Can I keep my own decomposition?",
+         "a": "With methods other than scotch or hierarchical the dictionary is left as it is; "
+              "numberOfSubdomains must then be at most the physical cores selected, otherwise "
+              "the run stops."},
+    ],
+}
+
+
 def guide_for(family: str) -> dict[str, Any] | None:
-    return GUIDES.get(family)
+    g = GUIDES.get(family)
+    if g is None:
+        return None
+    g = dict(g)
+    if family in PHYSICAL_CORE_FAMILIES:
+        g["cores"] = CORES_RULE
+    if family in FAQ:
+        g["faq"] = FAQ[family]
+    return g
