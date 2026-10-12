@@ -1038,3 +1038,15 @@ async def test_fds_guide_monitoring_and_outputs():
     g = await server.solver_guide("fds")
     assert any("T_END" in m for m in g["monitoring"]) and "7-Zip" in g["outputs"]
     assert any("NOTHING TO DO" in r for r in g["restart"])
+
+
+async def test_every_tool_has_title_and_hint():
+    tools = await server.mcp.list_tools()
+    assert len(tools) == len(server.TOOL_TITLES)
+    for t in tools:
+        assert t.title and t.annotations.title == t.title, t.name
+        a = t.annotations
+        assert a.read_only_hint is True or a.destructive_hint is True, t.name
+        assert not (a.read_only_hint and a.destructive_hint), t.name
+    by = {t.name: t.annotations for t in tools}
+    assert by["launch_simulation"].destructive_hint and by["list_simulations"].read_only_hint

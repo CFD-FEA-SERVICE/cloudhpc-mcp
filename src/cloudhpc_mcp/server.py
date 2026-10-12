@@ -1016,6 +1016,44 @@ if LOCAL:
         return out
 
 
+# ------------------------------------------------ titles and annotations
+# Every tool has a human-readable title and is marked either read-only or
+# destructive (directories such as Claude's require it; clients use it to
+# decide when to ask the user for confirmation).
+
+TOOL_TITLES = {
+    "list_solvers": "List solvers",
+    "list_machine_options": "List machine options",
+    "solver_guide": "Solver guide",
+    "suggest_resources": "Suggest vCPU and RAM",
+    "list_storage": "List storage",
+    "list_results": "List result files",
+    "get_download_link": "Get download link",
+    "get_upload_link": "Get upload link",
+    "delete_storage": "Delete from storage",
+    "launch_simulation": "Launch simulation",
+    "list_simulations": "List simulations",
+    "get_simulation": "Get simulation",
+    "wait_for_simulation": "Wait for simulation",
+    "sync_simulation": "Sync partial results",
+    "stop_simulation": "Stop simulation",
+    "open_remote_desktop": "Open remote desktop",
+    "api_usage": "API usage",
+    "inspect_case": "Inspect local case",
+    "upload_folder": "Upload case folder",
+    "download_results": "Download results",
+}
+# change data or cost money: always confirmed by the client
+DESTRUCTIVE_TOOLS = {"delete_storage", "launch_simulation", "stop_simulation",
+                     "sync_simulation", "upload_folder", "download_results"}
+
+for _t in mcp._tool_manager.list_tools():
+    _t.title = TOOL_TITLES.get(_t.name, _t.name.replace("_", " ").capitalize())
+    _destructive = _t.name in DESTRUCTIVE_TOOLS
+    _t.annotations = ToolAnnotations(title=_t.title, readOnlyHint=not _destructive,
+                                     destructiveHint=_destructive, openWorldHint=True)
+
+
 # ------------------------------------------------------- public mode
 
 if PUBLIC:

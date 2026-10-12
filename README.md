@@ -325,10 +325,17 @@ Then sign in on the cloudHPC page ([Sign-in with OAuth](#sign-in-with-oauth)).
 
 #### Gemini web
 
-In the Gemini app, add a custom MCP server (app) with URL
-`https://mcp.cloudhpc.cloud/mcp` and sign in on the cloudHPC page when asked
-([Sign-in with OAuth](#sign-in-with-oauth)). Gemini registers itself
-automatically: you do not need an OAuth client ID or secret.
+In the Gemini app (gemini.google.com):
+
+1. Click **Customise** in the left sidebar.
+2. Open the **Connectors** tab.
+3. Click **+ Custom**, enter the URL `https://mcp.cloudhpc.cloud/mcp` and click
+   **Next**.
+4. Sign in on the cloudHPC page that opens
+   ([Sign-in with OAuth](#sign-in-with-oauth)).
+
+Gemini registers itself automatically: you do not need an OAuth client ID or
+secret. The connector then appears under **Connected apps**.
 
 #### Copilot web
 

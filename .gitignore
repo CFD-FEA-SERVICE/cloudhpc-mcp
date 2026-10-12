@@ -11,3 +11,7 @@ e2e_results/
 scripts/release.sh
 scripts/release.env.example
 .venv-release/
+
+# MCP registry signing key (never commit)
+key.pem
+*.pem
