@@ -1087,8 +1087,22 @@ def main() -> None:
         uvicorn.run(PerIPRateLimit(app, PUBLIC_RATE_PER_MIN), host=HOST, port=PORT,
                     log_level="warning")
     else:
-        mcp.run(transport="streamable-http", host=HOST, port=PORT,
-                stateless_http=True, json_response=True)
+        import uvicorn
+
+        uvicorn.run(remote_app(), host=HOST, port=PORT, log_level="warning")
+
+
+def remote_app():
+    """ASGI app of the hosted endpoint: MCP on /mcp plus, when
+    CLOUDHPC_OAUTH_SECRET is set, OAuth sign-in for assistants that need it."""
+    from . import oauth
+
+    app = mcp.streamable_http_app(stateless_http=True, json_response=True, host=HOST)
+    provider = oauth.from_env()
+    if provider is None:
+        return app
+    app.router.routes[:0] = provider.routes()
+    return oauth.AuthGate(app, provider)
 
 
 if __name__ == "__main__":

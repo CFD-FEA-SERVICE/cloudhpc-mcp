@@ -296,10 +296,17 @@ connector is also available in the Claude desktop and mobile apps.
 
 #### ChatGPT web
 
-ChatGPT web connectors (developer mode) currently accept only OAuth or no
-authentication, not an API-key header, so they cannot connect to this
-endpoint yet. Use the [ChatGPT desktop app](#chatgpt-desktop-app) or
-[Codex CLI](#codex-cli) with the local installation.
+ChatGPT connects with OAuth sign-in. In ChatGPT, turn on developer mode and
+add a custom connector (app):
+
+- URL: `https://mcp.cloudhpc.cloud/mcp`
+- Authentication: **OAuth**
+
+ChatGPT opens a cloudHPC page where you paste your API key once. ChatGPT never
+sees the key: it receives tokens that expire (1 hour, renewed automatically
+for 30 days). To revoke access, regenerate the API key in your cloudHPC
+profile. The same OAuth sign-in also works in claude.ai and any other client
+that supports OAuth for MCP servers.
 
 #### Gemini and Copilot web
 
@@ -378,6 +385,7 @@ Server modes (`CLOUDHPC_MCP_MODE`):
 |---|---|---|
 | `local` (default) | stdio | Desktop and terminal apps on your computer |
 | `remote` | streamable HTTP | Hosted endpoint; the API key comes with each request |
+| `remote` + OAuth | streamable HTTP | Set `CLOUDHPC_OAUTH_SECRET` (random value; comma-separated list to rotate) and `CLOUDHPC_PUBLIC_URL` (public base URL): adds OAuth 2.1 sign-in (PKCE, dynamic client registration and client ID metadata documents) where the user pastes the API key on a server page; tokens are encrypted, nothing is stored. Requests without credentials get `401` with the OAuth challenge; `X-API-Key` keeps working |
 | `public` | streamable HTTP | Key-less guide endpoint (e.g. for a website chat bot): only `solver_guide`, `list_solvers`, `list_machine_options`, `suggest_resources`. The solver and machine catalog is read with the key in `CLOUDHPC_CATALOG_APIKEY` (a dedicated account with no data) and cached for `CLOUDHPC_CATALOG_TTL` seconds (default 3600); requests are limited to `CLOUDHPC_PUBLIC_RATE_PER_MIN` per client IP (default 60) |
 
 `scripts/e2e_test.py` runs the whole workflow against the real API with your
