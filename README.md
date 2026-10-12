@@ -100,15 +100,16 @@ There are two ways to connect:
   computer, so it can read your case folders and save results next to them. All
   tools are available. Recommended.
 - **Hosted endpoint** (web apps): `https://mcp.cloudhpc.cloud/mcp`, nothing to
-  install. It cannot read files on your computer: you upload cases and download
-  results with temporary links (or from the cloudHPC web app). See
-  [Web apps](#web-apps-hosted-endpoint).
+  install. You connect by signing in once with your API key (OAuth) or by
+  sending the key in a header. It cannot read files on your computer: you
+  upload cases and download results with temporary links (or from the cloudHPC
+  web app). See [Web apps](#web-apps-hosted-endpoint).
 
 | Assistant | Desktop app | Terminal (Linux) | Web app |
 |---|---|---|---|
 | Claude | [Claude Desktop](#claude-desktop) (Windows, macOS, Linux beta) | [Claude Code](#claude-code) | [claude.ai](#claudeai) (custom connector) |
-| ChatGPT | [ChatGPT desktop app](#chatgpt-desktop-app) (where MCP servers are available) | [Codex CLI](#codex-cli) | [not yet](#chatgpt-web) |
-| Gemini | not supported: the Gemini desktop app has no MCP support | [Gemini CLI](#gemini-cli) | not supported |
+| ChatGPT | [ChatGPT desktop app](#chatgpt-desktop-app) (where MCP servers are available) | [Codex CLI](#codex-cli) | [ChatGPT](#chatgpt-web) (OAuth sign-in) |
+| Gemini | not supported: no Gemini desktop app with MCP support | [Gemini CLI](#gemini-cli) | [Gemini](#gemini-web) (OAuth sign-in) |
 | GitHub Copilot | [VS Code (Copilot agent mode)](#vs-code-copilot-agent-mode) | [Copilot CLI](#copilot-cli) | not supported |
 
 In every example replace `your-api-key` with your key. If the assistant cannot
@@ -265,10 +266,14 @@ variable `CLOUDHPC_APIKEY`.
 
 ### Web apps (hosted endpoint)
 
-Endpoint: `https://mcp.cloudhpc.cloud/mcp` (streamable HTTP). Every request must
-carry your cloudHPC API key in the `X-API-Key` header (or
-`Authorization: Bearer <key>`). The endpoint stores nothing: the key is only
-forwarded to the cloudHPC API for that request.
+Endpoint: `https://mcp.cloudhpc.cloud/mcp` (streamable HTTP). Two ways to
+authenticate:
+
+- **Sign in with OAuth** (ChatGPT, Gemini, claude.ai and any client that
+  supports OAuth for MCP servers): see [Sign-in with OAuth](#sign-in-with-oauth).
+- **API key header**: the client sends your key with every request in the
+  `X-API-Key` header (or `Authorization: Bearer <key>`). The endpoint stores
+  nothing: the key is only forwarded to the cloudHPC API for that request.
 
 What changes compared with the local installation:
 
@@ -280,38 +285,55 @@ What changes compared with the local installation:
   the cloudHPC web app.
 - To get results, ask for a download link (`get_download_link`).
 
+#### Sign-in with OAuth
+
+When you add the connector with OAuth, the assistant opens a cloudHPC sign-in
+page:
+
+1. Check the name of the app asking for access. It will be able to see your
+   simulations and storage, upload files and **launch or stop simulations,
+   which are billed to your account**.
+2. Paste your API key ([how to find your API key](https://docs.cloudhpc.cloud/APIKEY/))
+   and click **Connect**.
+
+The assistant never sees the key: it receives tokens that expire after one
+hour and are renewed automatically for 30 days, then you sign in again. To
+revoke access for every connected assistant, regenerate the API key in your
+cloudHPC profile: access stops within an hour.
+
 #### claude.ai
 
 On plans with custom connectors: **Settings > Connectors > Add custom
-connector**.
+connector**, URL `https://mcp.cloudhpc.cloud/mcp`, then either:
 
-- URL: `https://mcp.cloudhpc.cloud/mcp`
-- Authentication: **No sign-in**, then under **Request headers** add
-  `X-API-Key` = `your-api-key`
+- leave the authentication on OAuth and sign in when asked
+  ([Sign-in with OAuth](#sign-in-with-oauth)), or
+- choose **No sign-in** and under **Request headers** add
+  `X-API-Key` = `your-api-key`.
 
-Enable the connector in a conversation from the tools menu. Request-header
-authentication is being rolled out gradually: if your account only offers
-OAuth, use Claude Desktop or Claude Code with the local installation. The same
-connector is also available in the Claude desktop and mobile apps.
+Enable the connector in a conversation from the tools menu. The same connector
+is also available in the Claude desktop and mobile apps.
 
 #### ChatGPT web
 
-ChatGPT connects with OAuth sign-in. In ChatGPT, turn on developer mode and
-add a custom connector (app):
+In ChatGPT, turn on developer mode and add a custom connector (app):
 
 - URL: `https://mcp.cloudhpc.cloud/mcp`
 - Authentication: **OAuth**
 
-ChatGPT opens a cloudHPC page where you paste your API key once. ChatGPT never
-sees the key: it receives tokens that expire (1 hour, renewed automatically
-for 30 days). To revoke access, regenerate the API key in your cloudHPC
-profile. The same OAuth sign-in also works in claude.ai and any other client
-that supports OAuth for MCP servers.
+Then sign in on the cloudHPC page ([Sign-in with OAuth](#sign-in-with-oauth)).
 
-#### Gemini and Copilot web
+#### Gemini web
 
-The Gemini web app, Microsoft Copilot and Copilot Chat on github.com do not
-support custom MCP servers.
+In the Gemini app, add a custom MCP server (app) with URL
+`https://mcp.cloudhpc.cloud/mcp` and sign in on the cloudHPC page when asked
+([Sign-in with OAuth](#sign-in-with-oauth)). Gemini registers itself
+automatically: you do not need an OAuth client ID or secret.
+
+#### Copilot web
+
+Microsoft Copilot and Copilot Chat on github.com do not support custom MCP
+servers.
 
 #### Other clients using the hosted endpoint
 
@@ -357,7 +379,8 @@ and `"headers"`; Codex CLI uses `url` and `http_headers` in `config.toml`).
   account and its terms. For confidential projects check your provider's data
   settings (e.g. training opt-out, business plans). With the local installation
   your API key stays on your computer; the hosted endpoint only forwards it and
-  stores nothing.
+  stores nothing. With OAuth sign-in the assistant only holds encrypted,
+  expiring tokens, not the key.
 
 ## Troubleshooting
 
@@ -367,6 +390,9 @@ and `"headers"`; Codex CLI uses `url` and `http_headers` in `config.toml`).
 | `command not found` / server fails to start | Use the full path of `cloudhpc-mcp` (`which cloudhpc-mcp`). Desktop apps do not load your shell's PATH, conda or virtual environments. |
 | `Unauthorized: the API key is invalid` | Copy the key again from your cloudHPC profile page. |
 | Hosted endpoint: `Invalid header name` | Write the header exactly as `X-API-Key: your-api-key` (name, colon, space, key). |
+| Sign-in page: "The API key was not accepted" | Copy the key again from your profile ([how to find it](https://docs.cloudhpc.cloud/APIKEY/)); paste only the key, without spaces. |
+| The assistant asks for an OAuth client ID and secret | Remove the connector and add it again with the URL `https://mcp.cloudhpc.cloud/mcp`: it registers automatically, no client ID or secret is needed. |
+| The assistant asks you to sign in again | Normal after 30 days, or after you regenerated the API key: sign in with the current key. |
 | `rate limit reached` | Wait for the next hour, or ask the assistant to check less often. |
 | The wait for a run is cut off | Raise the tool timeout of your client (see the examples above) or ask the assistant to wait in shorter steps. |
 
