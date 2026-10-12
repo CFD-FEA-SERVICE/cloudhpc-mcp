@@ -88,6 +88,11 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
    OPENFOAM-solution.tar.gz, CALCULIX.tar.gz, ...). list_results then
    download_results (local) or get_download_link (remote).
 
+To resume a stopped run use resume_simulation (FDS and OpenFOAM: same solver,
+vCPU, RAM type and folder). For post-processing on a remote desktop use
+start_desktop and always remind the user to stop it: it is billed until stopped.
+If a tool is missing, the user may have signed in with read-only access.
+
 Never modify, move or delete the user's case files on your own initiative:
 report what the pre-flight checks found, propose the fix and ask first.
 
@@ -830,6 +835,131 @@ async def stop_simulation(
     return {"stopping": True, "summary": summary}
 
 
+@mcp.tool(annotations=WRITE)
+async def start_desktop(
+    folder: str,
+    os_type: Literal["linux", "windows"] = "linux",
+    cpu: int = 4,
+    ram: str = "standard",
+    confirm: bool = False,
+    ctx: Context = None,
+) -> dict:
+    """Start a remote desktop machine (static instance) for post-processing,
+    e.g. ParaView or Smokeview on the results of a storage folder.
+
+    folder: storage folder to work on. os_type: "linux" (default) or "windows"
+    (Windows adds a Windows licence cost). Only on activated accounts.
+    The machine keeps running, and is billed per vCPU-hour, until it is stopped
+    with stop_simulation: it never stops by itself. Call first with
+    confirm=false, show the summary to the user, then call again with
+    confirm=true only after explicit approval. When it is RUNNING, get the link
+    with open_remote_desktop.
+    """
+    c = client_for(ctx)
+    try:
+        cpus, rams, scripts = await asyncio.gather(c.cpu_options(), c.ram_options(), c.scripts())
+    except CloudHPCError as e:
+        return _err(e)
+    wanted = "ubuntu-static" if os_type == "linux" else "windows-static"
+    script = next((x for x in scripts if wanted in x.lower()), None)
+    problems = []
+    if not script:
+        problems.append(f"No {os_type} desktop script available. Desktop scripts: "
+                        f"{[x for x in scripts if 'static' in x.lower()]}")
+    if cpu not in cpus:
+        problems.append(f"vCPU {cpu} not available. Options: {cpus}")
+    if ram not in rams:
+        problems.append(f"RAM type '{ram}' not available. Options: {rams}")
+    if cpu == 1 and ram == "highcpu":
+        problems.append("1 vCPU highcpu has too little RAM for a desktop: use standard.")
+    chars = errors.bad_name(folder)
+    if chars:
+        problems.append(f"Folder name '{folder}' contains characters cloudHPC does not "
+                        f"accept: {' '.join(chars)}")
+    if problems:
+        return {"error": "Desktop not started (nothing was sent to cloudHPC).",
+                "problems": problems}
+    summary = (f"Start a {'Windows' if os_type == 'windows' else 'Linux'} remote desktop "
+               f"({script}) on {cpu} vCPU ({ram}) with storage folder '{folder}'. It keeps "
+               "running and is billed per vCPU-hour until you stop it: it does not stop by "
+               "itself.")
+    if os_type == "windows":
+        summary += " Windows desktops also include a Windows licence cost."
+    stop = await _confirmed(ctx, summary, confirm)
+    if stop:
+        return stop
+    try:
+        sim_id = await c.add_simulation(cpu, ram, script, folder)
+    except CloudHPCError as e:
+        return _err(e)
+    return {"started": True, "simulation_id": sim_id, "summary": summary,
+            "next": "When get_simulation shows RUNNING (a few minutes), get the link with "
+                    "open_remote_desktop. Stop it with stop_simulation when finished: it "
+                    "is billed until then."}
+
+
+RESUMABLE = {"fds", "openfoam"}   # resume tested on cloudHPC for these solvers
+
+
+@mcp.tool(annotations=WRITE)
+async def resume_simulation(simulation_id: int, confirm: bool = False,
+                            ctx: Context = None) -> dict:
+    """Resume a stopped or interrupted simulation: launch it again on the same
+    storage folder with the SAME solver, vCPU, RAM type and instance type, so
+    the solver continues from its restart data (FDS .restart files, OpenFOAM
+    latest time). Tested for FDS and OpenFOAM only. vCPU and RAM are never
+    changed: changing them on a restart is not recommended.
+    See https://docs.cloudhpc.cloud/simulation/#restart . Costs money: call
+    first with confirm=false, show the summary, then confirm=true after approval.
+    """
+    c = client_for(ctx)
+    try:
+        s = await c.get_simulation(simulation_id)
+    except CloudHPCError as e:
+        return _err(e)
+    if s.get("status") in ACTIVE_STATUSES:
+        return {"error": f"Simulation {simulation_id} is still "
+                         f"{STATUS.get(s.get('status'))}: it can be resumed only after it stops."}
+    script, folder = str(s.get("script", "")), str(s.get("folder", "")).strip("/")
+    fam = advisor.family_of(script)
+    if fam not in RESUMABLE:
+        return {"error": f"Resume is tested on cloudHPC only for FDS and OpenFOAM, not for "
+                         f"{script}. Each solver resumes differently: check its restart "
+                         "settings, then launch it again with launch_simulation on the same "
+                         "folder, solver, vCPU and RAM type.",
+                "docs": "https://docs.cloudhpc.cloud/simulation/#restart"}
+    notes = []
+    if fam == "fds":
+        try:
+            items = await c.list_storage(folder)
+        except CloudHPCError as e:
+            return _err(e)
+        if not any(str(i.get("basename", "")).endswith(".restart") for i in items):
+            return {"error": "No .restart files in the storage folder: FDS would start again "
+                             "from time 0, so this is not a resume. FDS writes restart files "
+                             "only if DT_RESTART is set on &DUMP.",
+                    "folder": folder, "hint": MISSING_FILES_HINT if not items else None}
+        notes.append("FDS finds the .restart files and adds RESTART=.TRUE. automatically.")
+    else:
+        notes.append("OpenFOAM continues from the latest time saved in the folder "
+                     "(startFrom latestTime is enforced).")
+    cpu, ram, regular = int(s.get("cpu")), str(s.get("ram")), bool(s.get("nopre"))
+    summary = (f"Resume simulation {simulation_id}: run {script} again on {cpu} vCPU ({ram}"
+               f"{', regular instance' if regular else ', preemptible'}) using storage folder "
+               f"'{folder}'. Billed per vCPU-hour until it ends or is stopped. "
+               + " ".join(notes))
+    stop = await _confirmed(ctx, summary, confirm)
+    if stop:
+        return stop
+    try:
+        sim_id = await c.add_simulation(cpu, ram, script, folder, s.get("mesh") or None, regular)
+    except CloudHPCError as e:
+        return _err(e)
+    return {"resumed": True, "simulation_id": sim_id, "previous_simulation_id": simulation_id,
+            "summary": summary,
+            "next": "Use get_simulation or wait_for_simulation to follow it."}
+
+
 @mcp.tool(annotations=READ)
 async def open_remote_desktop(simulation_id: int, ctx: Context = None) -> dict:
     """Get the browser remote-desktop (VNC) link of a running simulation.
@@ -1042,10 +1172,15 @@ TOOL_TITLES = {
     "inspect_case": "Inspect local case",
     "upload_folder": "Upload case folder",
     "download_results": "Download results",
+    "start_desktop": "Start remote desktop",
+    "resume_simulation": "Resume simulation",
 }
 # change data or cost money: always confirmed by the client
 DESTRUCTIVE_TOOLS = {"delete_storage", "launch_simulation", "stop_simulation",
-                     "sync_simulation", "upload_folder", "download_results"}
+                     "sync_simulation", "upload_folder", "download_results",
+                     "start_desktop", "resume_simulation"}
+# not offered to read-only OAuth sign-ins (also tools that give write access)
+READONLY_BLOCKED = DESTRUCTIVE_TOOLS | {"get_upload_link", "open_remote_desktop"}
 
 for _t in mcp._tool_manager.list_tools():
     _t.title = TOOL_TITLES.get(_t.name, _t.name.replace("_", " ").capitalize())
@@ -1142,7 +1277,7 @@ def remote_app():
     if provider is None:
         return app
     app.router.routes[:0] = provider.routes()
-    return oauth.AuthGate(app, provider)
+    return oauth.AuthGate(app, provider, blocked_tools=READONLY_BLOCKED)
 
 
 if __name__ == "__main__":

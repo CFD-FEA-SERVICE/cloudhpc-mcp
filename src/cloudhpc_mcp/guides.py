@@ -412,6 +412,34 @@ GUIDES: dict[str, dict[str, Any]] = {
         "logs": ["openTELEMAC.log"],
         "docs": "https://www.opentelemac.org",
     },
+    "desktop": {
+        "name": "Remote desktop (static instance): ubuntu-static, windows-static",
+        "input": ["A storage folder to work on (e.g. the folder of a finished simulation)."],
+        "automatic": [
+            "A machine with a graphical desktop starts on the selected vCPU and RAM type; "
+            "open it in the browser with the remote-desktop link once it is RUNNING.",
+            "Use it for post-processing (ParaView, Smokeview, ...) without downloading the "
+            "results.",
+        ],
+        "parallel": "Interactive use: choose vCPU and RAM for the size of the results to open.",
+        "resources": "Large results need RAM: prefer standard or highmem over highcpu. "
+                     "windows-static adds a Windows licence cost.",
+        "logs": [],
+        "important": "The desktop does not stop by itself: it is billed per vCPU-hour until "
+                     "you stop it. Only on activated accounts.",
+        "docs": "https://docs.cloudhpc.cloud/simulation/#execute_a_static_instance",
+    },
+    "postprocess": {
+        "name": "cloudHPC-postProcess (automatic post-processing)",
+        "input": ["The storage folder of a finished simulation."],
+        "automatic": ["Generates post-processing images automatically from the results and "
+                      "saves them in POSTPROCESS.tar.gz in the same folder."],
+        "parallel": "Not a solver run: a few vCPU are enough.",
+        "resources": "Start with a small machine; use more RAM for very large results.",
+        "logs": [],
+        "outputs": "POSTPROCESS.tar.gz in the case folder.",
+        "docs": DOCS,
+    },
 }
 
 # script-name prefixes (lower case) -> guide key, for families not in advisor
@@ -428,6 +456,9 @@ EXTRA_FAMILIES = {
     "swan": "swan",
     "xbeach": "xbeach",
     "custom-script": "custom",
+    "ubuntu-static": "desktop",
+    "windows-static": "desktop",
+    "cloudhpc-postprocess": "postprocess",
 }
 
 

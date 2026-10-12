@@ -257,3 +257,70 @@ def test_smithery_redirect():
     p = oauth.OAuthProvider("k", BASE)
     assert p.redirect_allowed("https://connect.smithery.ai/oauth/callback")
     assert not p.redirect_allowed("https://connect.smithery.ai/oauth/callback/x")
+
+
+
+def test_read_only_sign_in_filters_tools(setup):
+    import json as _json
+    client, provider, _ = setup
+    seen = []
+
+    async def inner(scope, receive, send):              # fake MCP server
+        msg = await receive()
+        req = _json.loads(msg["body"])
+        seen.append(req["method"])
+        if req["method"] == "tools/list":
+            body = {"jsonrpc": "2.0", "id": req["id"], "result": {"tools": [
+                {"name": "list_simulations"}, {"name": "launch_simulation"},
+                {"name": "get_upload_link"}]}}
+        else:
+            body = {"jsonrpc": "2.0", "id": req["id"], "result": {"content": [], "ok": True}}
+        out = _json.dumps(body).encode()
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(out)).encode())]})
+        await send({"type": "http.response.body", "body": out})
+
+    gate = oauth.AuthGate(inner, provider, blocked_tools={"launch_simulation", "get_upload_link"})
+    c = TestClient(gate, base_url=BASE)
+    ro = provider.sealer.seal("access", {"k": GOOD_KEY, "aud": BASE + "/mcp", "ro": True,
+                                         "exp": time.time() + 60})
+    rw = provider.sealer.seal("access", {"k": GOOD_KEY, "aud": BASE + "/mcp",
+                                         "exp": time.time() + 60})
+    lst = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "launch_simulation", "arguments": {}}}
+
+    names = [t["name"] for t in c.post("/mcp", json=lst, headers={"Authorization": f"Bearer {ro}"})
+             .json()["result"]["tools"]]
+    assert names == ["list_simulations"]
+    r = c.post("/mcp", json=call, headers={"Authorization": f"Bearer {ro}"}).json()
+    assert r["result"]["isError"] and "read-only" in r["result"]["content"][0]["text"]
+    assert seen == ["tools/list"]                        # the blocked call never reached the server
+
+    names = [t["name"] for t in c.post("/mcp", json=lst, headers={"Authorization": f"Bearer {rw}"})
+             .json()["result"]["tools"]]
+    assert len(names) == 3
+    assert c.post("/mcp", json=call, headers={"Authorization": f"Bearer {rw}"}).json()["result"]["ok"]
+
+
+def test_read_only_checkbox_carries_into_tokens(setup):
+    client, provider, _ = setup
+    reg = client.post("/oauth/register", json={"redirect_uris": [CHATGPT]}).json()
+    verifier, challenge = _pkce()
+    page = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": reg["client_id"], "redirect_uri": CHATGPT,
+        "code_challenge": challenge, "code_challenge_method": "S256"})
+    assert 'name="read_only"' in page.text
+    token = re.search(r'name="form_token" value="([^"]+)"', page.text).group(1)
+    r = client.post("/oauth/authorize", data={"form_token": token, "api_key": GOOD_KEY,
+                                              "read_only": "1", "action": "allow"})
+    code = parse_qs(urlsplit(r.headers["location"]).query)["code"][0]
+    t = client.post("/oauth/token", data={"grant_type": "authorization_code", "code": code,
+                                          "redirect_uri": CHATGPT, "client_id": reg["client_id"],
+                                          "code_verifier": verifier}).json()
+    assert t["scope"] == "cloudhpc:read"
+    assert provider.access_grant(t["access_token"]) == (GOOD_KEY, True)
+    t2 = client.post("/oauth/token", data={"grant_type": "refresh_token", "client_id": reg["client_id"],
+                                           "refresh_token": t["refresh_token"]}).json()
+    assert provider.access_grant(t2["access_token"]) == (GOOD_KEY, True)   # survives refresh

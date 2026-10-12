@@ -40,6 +40,8 @@ FAMILIES = {
     "swan": "SWAN",
     "xbeach": "XBeach",
     "custom": "Custom scripts (bash / Python)",
+    "desktop": "Remote desktop (static instance)",
+    "postprocess": "cloudHPC automatic post-processing",
     "other": "Other / generic",
 }
 
@@ -59,7 +61,9 @@ def family_of(script: str) -> str:
                         ("liggghts", "liggghts"), ("openlb", "openlb"),
                         ("opentelemac", "telemac"), ("telemac", "telemac"),
                         ("codesaturne", "codesaturne"), ("code_saturne", "codesaturne"),
-                        ("swan", "swan"), ("xbeach", "xbeach"), ("custom-script", "custom")):
+                        ("swan", "swan"), ("xbeach", "xbeach"), ("custom-script", "custom"),
+                        ("ubuntu-static", "desktop"), ("windows-static", "desktop"),
+                        ("cloudhpc-postprocess", "postprocess")):
         if s.startswith(prefix):
             return fam
     if s.startswith("fds"):

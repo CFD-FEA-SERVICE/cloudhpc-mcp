@@ -14,6 +14,7 @@ follows the [cloudHPC scalability rules](https://docs.cloudhpc.cloud/scalability
 and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.cloud/errors/).
 
 - [What you can ask](#what-you-can-ask)
+- [Safe first prompts](#safe-first-prompts)
 - [Tools](#tools)
 - [Installation](#installation)
 - [Connect your AI assistant](#connect-your-ai-assistant)
@@ -29,6 +30,23 @@ and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.clou
 - *"What is the status of my running simulations?"*
 - *"My last run failed: what went wrong?"*
 
+## Safe first prompts
+
+Start with questions that only read data, then move on to actions that cost
+money once you are comfortable with how the assistant works:
+
+1. *"How do I prepare an OpenFOAM case for cloudHPC?"* (no account needed)
+2. *"List my last simulations and summarise their status."*
+3. *"Why did my last simulation fail? Check the log."*
+4. *"Which vCPU and RAM type should I use for an FDS model with 8 meshes and 2
+   million cells?"*
+5. *"What is in the storage folder of my last run, and which files are results?"*
+
+Only then: *"Upload this case and launch it"*, *"Resume simulation 1234"*. Every
+action that costs money or deletes data asks for your confirmation first, and
+the assistant shows you what it will do. With OAuth sign-in you can also
+connect with **read-only access** (see [Sign-in with OAuth](#sign-in-with-oauth)).
+
 ## Tools
 
 | Tool | What it does |
@@ -42,6 +60,8 @@ and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.clou
 | `list_simulations`, `get_simulation`, `wait_for_simulation` | Follow your runs; finished runs include a diagnosis of known errors |
 | `sync_simulation` | Upload partial results of a running job |
 | `stop_simulation` | Soft or hard stop (**asks for confirmation**) |
+| `resume_simulation` | Resume a stopped run with the same solver, vCPU, RAM type and folder (FDS and OpenFOAM; **asks for confirmation**) |
+| `start_desktop` | Start a Linux or Windows remote desktop for post-processing; billed until you stop it (**asks for confirmation**) |
 | `open_remote_desktop` | Browser remote-desktop link of a running job |
 | `list_storage`, `list_results` | Browse your storage and result archives |
 | `download_results` ¹ | Download result archives and extract them locally |
@@ -293,8 +313,12 @@ page:
 1. Check the name of the app asking for access. It will be able to see your
    simulations and storage, upload files and **launch or stop simulations,
    which are billed to your account**.
-2. Paste your API key ([how to find your API key](https://docs.cloudhpc.cloud/APIKEY/))
-   and click **Connect**.
+2. Paste your API key ([how to find your API key](https://docs.cloudhpc.cloud/APIKEY/)).
+3. Optionally tick **Read-only access**: the assistant can then see simulations,
+   storage and results, but cannot launch, stop, resume, upload, delete or open
+   remote desktops. Useful to try the connector safely, or for colleagues who
+   only need to follow the runs.
+4. Click **Connect**.
 
 The assistant never sees the key: it receives tokens that expire after one
 hour and are renewed automatically for 30 days, then you sign in again. To

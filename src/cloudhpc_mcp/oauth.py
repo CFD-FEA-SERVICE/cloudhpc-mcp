@@ -46,6 +46,7 @@ _STATIC = os.path.join(os.path.dirname(__file__), "static")
 _ICONS = {"/favicon.png": "favicon-32.png", "/favicon.ico": "favicon-32.png",
           "/apple-touch-icon.png": "favicon-160.png"}
 SCOPE = "cloudhpc"
+SCOPE_READ = "cloudhpc:read"   # granted when the user ticks "read-only access"
 CODE_TTL = 60
 ACCESS_TTL = 3600
 REFRESH_TTL = 30 * 24 * 3600
@@ -196,7 +197,7 @@ class OAuthProvider:
         return JSONResponse({
             "resource": resource,
             "authorization_servers": [self.base],
-            "scopes_supported": [SCOPE],
+            "scopes_supported": [SCOPE, SCOPE_READ],
             "bearer_methods_supported": ["header"],
             "resource_name": "cloudHPC",
             "resource_documentation": "https://github.com/CFD-FEA-SERVICE/cloudhpc-mcp",
@@ -212,7 +213,7 @@ class OAuthProvider:
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
-            "scopes_supported": [SCOPE],
+            "scopes_supported": [SCOPE, SCOPE_READ],
             "client_id_metadata_document_supported": True,
             "authorization_response_iss_parameter_supported": True,
             "service_documentation": "https://github.com/CFD-FEA-SERVICE/cloudhpc-mcp",
@@ -300,7 +301,7 @@ class OAuthProvider:
         code = self.sealer.seal("code", {
             "k": key, "c": params["client_id"], "r": params["redirect_uri"],
             "ch": params["code_challenge"], "res": params.get("resource") or self.base + "/mcp",
-            "s": SCOPE, "exp": time.time() + CODE_TTL})
+            "s": SCOPE, "ro": bool(form.get("read_only")), "exp": time.time() + CODE_TTL})
         return _redirect(params["redirect_uri"], {"code": code, "state": params.get("state"),
                                                   "iss": self.base})
 
@@ -319,33 +320,40 @@ class OAuthProvider:
             if not verifier or _s256(verifier) != code["ch"]:
                 return _oauth_error("invalid_grant", "PKCE verification failed")
             res = form.get("resource") or code["res"]
-            return self._issue(code["k"], client_id, res)
+            return self._issue(code["k"], client_id, res, bool(code.get("ro")))
         if grant == "refresh_token":
             rt = self.sealer.unseal("refresh", str(form.get("refresh_token", "")))
             if not rt or rt["c"] != client_id:
                 return _oauth_error("invalid_grant", "Refresh token invalid or expired")
             if not await self.validate_key(rt["k"]):
                 return _oauth_error("invalid_grant", "The API key is no longer valid")
-            return self._issue(rt["k"], client_id, form.get("resource") or rt["res"])
+            return self._issue(rt["k"], client_id, form.get("resource") or rt["res"],
+                               bool(rt.get("ro")))
         return _oauth_error("unsupported_grant_type", "Use authorization_code or refresh_token")
 
-    def _issue(self, key: str, client_id: str, resource: str) -> Response:
+    def _issue(self, key: str, client_id: str, resource: str, read_only: bool = False) -> Response:
         if resource.rstrip("/") not in {r.rstrip("/") for r in self.resources}:
             return _oauth_error("invalid_target", "Unknown resource")
         now = time.time()
-        at = self.sealer.seal("access", {"k": key, "aud": resource, "s": SCOPE,
+        scope = SCOPE_READ if read_only else SCOPE
+        at = self.sealer.seal("access", {"k": key, "aud": resource, "s": scope, "ro": read_only,
                                          "exp": now + ACCESS_TTL})
         rt = self.sealer.seal("refresh", {"k": key, "c": client_id, "res": resource,
-                                          "exp": now + REFRESH_TTL})
+                                          "ro": read_only, "exp": now + REFRESH_TTL})
         return JSONResponse({"access_token": at, "token_type": "Bearer",
-                             "expires_in": ACCESS_TTL, "refresh_token": rt, "scope": SCOPE},
+                             "expires_in": ACCESS_TTL, "refresh_token": rt, "scope": scope},
                             headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
-    def api_key_from_access_token(self, token: str) -> str | None:
+    def access_grant(self, token: str) -> tuple[str, bool] | None:
+        """(API key, read_only) of a valid access token, else None."""
         data = self.sealer.unseal("access", token)
         if not data or data.get("aud", "").rstrip("/") not in {r.rstrip("/") for r in self.resources}:
             return None
-        return data.get("k")
+        return data.get("k"), bool(data.get("ro"))
+
+    def api_key_from_access_token(self, token: str) -> str | None:
+        grant = self.access_grant(token)
+        return grant[0] if grant else None
 
     async def icon(self, request: Request) -> Response:
         with open(os.path.join(_STATIC, _ICONS[request.url.path]), "rb") as f:
@@ -374,29 +382,100 @@ class AuthGate:
       or expired (the client then refreshes the token).
     - Authorization: Bearer <raw API key>: passed through (existing clients).
     - nothing: 401 with the OAuth discovery challenge.
+
+    Read-only sign-ins: tools in `blocked_tools` are removed from tools/list
+    and refused in tools/call, before the request reaches the MCP server.
     """
 
-    def __init__(self, app, provider: OAuthProvider, path: str = "/mcp"):
+    def __init__(self, app, provider: OAuthProvider, path: str = "/mcp",
+                 blocked_tools: frozenset | set = frozenset()):
         self.app, self.provider, self.path = app, provider, path
+        self.blocked = frozenset(blocked_tools)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope.get("path", "").rstrip("/") == self.path:
             return await self.app(scope, receive, send)
         headers = [(k, v) for k, v in scope.get("headers") or []]
         names = {k for k, _ in headers}
+        read_only = False
         if b"x-api-key" not in names:
             auth = next((v.decode("latin-1") for k, v in headers if k == b"authorization"), "")
             token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
             if not token:
                 return await _unauthorized(send, self.provider.challenge())
             if token.startswith(PREFIX):
-                key = self.provider.api_key_from_access_token(token)
-                if not key:
+                grant = self.provider.access_grant(token)
+                if not grant or not grant[0]:
                     return await _unauthorized(send, self.provider.challenge("invalid_token"))
+                key, read_only = grant
                 headers = [(k, v) for k, v in headers if k != b"authorization"]
                 headers.append((b"x-api-key", key.encode()))
                 scope = dict(scope, headers=headers)
+        if read_only and self.blocked and scope.get("method") == "POST":
+            return await self._read_only(scope, receive, send)
         return await self.app(scope, receive, send)
+
+    async def _read_only(self, scope, receive, send):
+        body, more = b"", True
+        while more:
+            msg = await receive()
+            body += msg.get("body", b"")
+            more = msg.get("more_body", False)
+        try:
+            req = json.loads(body)
+        except ValueError:
+            req = None
+        method = req.get("method") if isinstance(req, dict) else None
+        name = ((req.get("params") or {}).get("name") if isinstance(req, dict) else None)
+
+        if method == "tools/call" and name in self.blocked:
+            reply = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {
+                "isError": True, "content": [{"type": "text", "text":
+                    f"'{name}' is not available: this connection was signed in with "
+                    "read-only access. To launch, stop, upload or delete, connect again "
+                    "without the read-only option."}]}}).encode()
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"content-length", str(len(reply)).encode())]})
+            await send({"type": "http.response.body", "body": reply})
+            return
+
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        if method != "tools/list":
+            return await self.app(scope, replay, send)
+
+        start, chunks = {}, []
+
+        async def capture(message):
+            if message["type"] == "http.response.start":
+                start.update(message)
+            elif message["type"] == "http.response.body":
+                chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    out = b"".join(chunks)
+                    try:
+                        data = json.loads(out)
+                        tools = data["result"]["tools"]
+                        data["result"]["tools"] = [t for t in tools
+                                                   if t.get("name") not in self.blocked]
+                        out = json.dumps(data).encode()
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                    hdrs = [(k, v) for k, v in start.get("headers", []) if k != b"content-length"]
+                    hdrs.append((b"content-length", str(len(out)).encode()))
+                    await send({"type": "http.response.start", "status": start.get("status", 200),
+                                "headers": hdrs})
+                    await send({"type": "http.response.body", "body": out})
+
+        await self.app(scope, replay, capture)
 
 
 async def _unauthorized(send, challenge: str):
@@ -472,7 +551,9 @@ h1{{font-size:20px;margin:0 0 4px}} p{{line-height:1.45}} .muted{{color:#5b6778;
 label{{display:block;font-weight:600;margin:18px 0 6px}}
 input[type=password]{{width:100%;box-sizing:border-box;padding:10px;border:1px solid #c5cdd8;border-radius:8px;font-size:15px}}
 .row{{display:flex;gap:10px;margin-top:18px}} button{{flex:1;padding:11px;border-radius:8px;border:0;font-size:15px;cursor:pointer}}
-.ok{{background:#1f6feb;color:#fff}} .no{{background:#e7ebf0;color:#1b2533}}
+.ok{{background:#1f6feb;color:#fff}}
+label.ro{{display:flex;gap:10px;align-items:flex-start;font-weight:400;font-size:14px;margin-top:14px}}
+label.ro input{{margin-top:3px}} .no{{background:#e7ebf0;color:#1b2533}}
 </style></head><body><main>{body}</main></body></html>"""
     return HTMLResponse(doc, status_code=status, headers=_SECURITY_HEADERS)
 
@@ -494,6 +575,9 @@ account.</p>
 (<a href="{APIKEY_HELP_URL}" target="_blank" rel="noopener noreferrer">how to find your API key</a>).
 The key is not shown to the assistant. To revoke access later, regenerate the key in your
 profile.</p>
+<label class="ro"><input type="checkbox" name="read_only" value="1">
+<span><strong>Read-only access</strong>: the assistant can see simulations, storage and
+results, but cannot launch, stop, upload or delete.</span></label>
 <div class="row"><button class="no" name="action" value="deny" formnovalidate>Cancel</button>
 <button class="ok" name="action" value="allow">Connect</button></div>
 </form>"""

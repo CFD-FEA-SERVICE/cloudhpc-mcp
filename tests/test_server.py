@@ -75,7 +75,7 @@ class FakeAPI:
         if p == "/simulation/view-ram":
             return ok(["highcpu", "standard", "highmem", "hypercpu", "basegpu", "highcore", "hypercore"])
         if p == "/simulation/view-scripts":
-            return ok(["fds6.9.1", "openFoam-v2406", "calculiX-2.21-PARDISO", "codeAster-17.0_mpi", "DAFoam-v5.0.0", "EnergyPlus-9.6.0", "EnergyPlus-25.2.0"])
+            return ok(["fds6.9.1", "openFoam-v2406", "calculiX-2.21-PARDISO", "codeAster-17.0_mpi", "DAFoam-v5.0.0", "EnergyPlus-9.6.0", "EnergyPlus-25.2.0", "ubuntu-static", "windows-static"])
         if p.startswith("/simulation/index-short/"):
             pg = int(p.rsplit("/", 1)[1])
             return ok([dict(SIM, status=self.sim_status), dict(SIM, id=10029, status=10)] if pg == 1 else [])
@@ -1050,3 +1050,51 @@ async def test_every_tool_has_title_and_hint():
         assert not (a.read_only_hint and a.destructive_hint), t.name
     by = {t.name: t.annotations for t in tools}
     assert by["launch_simulation"].destructive_hint and by["list_simulations"].read_only_hint
+
+
+
+# ------------------------------------------------------- desktop and resume
+
+async def test_start_desktop(api):
+    r = await server.start_desktop("caseA")
+    assert r["confirmation_required"] and "does not stop by itself" in r["summary"]
+    assert "ubuntu-static" in r["summary"] and "licence" not in r["summary"]
+    r = await server.start_desktop("caseA", os_type="windows", cpu=8, ram="highmem", confirm=True)
+    assert r["started"] and api.added["script"] == "windows-static"
+    assert api.added["cpu"] == 8 and api.added["ram"] == "highmem"
+    r = await server.start_desktop("caseA", cpu=3)
+    assert "error" in r and any("vCPU 3" in p for p in r["problems"])
+
+
+async def test_resume_simulation(api, monkeypatch):
+    api.sim_status = 30
+    r = await server.resume_simulation(10030)
+    assert "still RUNNING" in r["error"]
+
+    api.sim_status = 50                                    # STOPPED openFoam-v2406
+    r = await server.resume_simulation(10030)
+    assert r["confirmation_required"] and "48 vCPU (hypercore" in r["summary"]
+    r = await server.resume_simulation(10030, confirm=True)
+    assert r["resumed"] and api.added == {"cpu": 48, "ram": "hypercore",
+                                          "script": "openFoam-v2406", "folder": "caseA"}
+
+    monkeypatch.setitem(SIM, "script", "fds6.9.1")         # FDS without .restart files
+    r = await server.resume_simulation(10030, confirm=True)
+    assert "No .restart files" in r["error"]
+
+    async def with_restart(self, folder=""):
+        return [{"basename": "room_0001.restart", "type": "file"}]
+    monkeypatch.setattr(CloudHPCClient, "list_storage", with_restart)
+    r = await server.resume_simulation(10030, confirm=True)
+    assert r["resumed"] and api.added["script"] == "fds6.9.1"
+
+    monkeypatch.setitem(SIM, "script", "calculiX-2.21-PARDISO")
+    r = await server.resume_simulation(10030)
+    assert "only for FDS and OpenFOAM" in r["error"]
+
+
+async def test_desktop_and_postprocess_guides():
+    assert (await server.solver_guide("ubuntu-static"))["family"] == "desktop"
+    g = await server.solver_guide("cloudHPC-postProcess")
+    assert g["family"] == "postprocess" and "POSTPROCESS.tar.gz" in g["outputs"]
+    assert files.is_result_file("POSTPROCESS.tar.gz")

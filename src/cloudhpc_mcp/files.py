@@ -15,6 +15,7 @@ RESULT_PATTERNS = (
     "CODE-ASTER.tar.gz",
     "CALCULIX.tar.gz",
     "OPENRADIOSS.tar.gz",
+    "POSTPROCESS.tar.gz",
 )
 RESULT_SUFFIXES = (".tar.gz", ".rmed", ".frd")
 SKIP_PREFIXES = ("CloudHPC-massive-files",)  # e.g. CloudHPC-massive-files-20260925000914.tar.gz
