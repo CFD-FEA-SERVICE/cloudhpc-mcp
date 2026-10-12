@@ -57,6 +57,7 @@ DEFAULT_REDIRECTS = (
     "https://chatgpt.com/connector/oauth/",
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
+    "https://connect.smithery.ai/oauth/callback",
 )
 _LOCAL_REDIRECT = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?/")
 # Google: Gemini app (oauth-redirect*.googleusercontent.com/r/<id>) and Gemini Enterprise

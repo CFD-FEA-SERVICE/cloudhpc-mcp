@@ -251,3 +251,9 @@ def test_signin_page_branding(setup):
     for path in ("/favicon.png", "/favicon.ico", "/apple-touch-icon.png"):
         r = client.get(path)
         assert r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_smithery_redirect():
+    p = oauth.OAuthProvider("k", BASE)
+    assert p.redirect_allowed("https://connect.smithery.ai/oauth/callback")
+    assert not p.redirect_allowed("https://connect.smithery.ai/oauth/callback/x")
