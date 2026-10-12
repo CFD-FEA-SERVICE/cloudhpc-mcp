@@ -6,8 +6,10 @@ Two modes, same code:
                             CLOUDHPC_APIKEY or ~/.cfscloudhpc/apikey.
   remote (streamable-http)  runs on a server; stateless; the
                             API key comes with each request in the X-API-Key
-                            or Authorization: Bearer header. File transfers
-                            are done by the client with signed URLs.
+                            or Authorization: Bearer header, or from an OAuth
+                            sign-in (oauth.py, when CLOUDHPC_OAUTH_SECRET is
+                            set). File transfers are done by the client with
+                            signed URLs.
   public (streamable-http)  key-less guide endpoint for website chat bots:
                             only solver_guide, list_solvers,
                             list_machine_options and suggest_resources. The

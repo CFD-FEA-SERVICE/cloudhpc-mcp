@@ -106,9 +106,10 @@ class CloudHPCClient:
     def __post_init__(self) -> None:
         if not self.api_key or not self.api_key.strip():
             raise CloudHPCError(
-                "No cloudHPC API key. Set CLOUDHPC_APIKEY (local mode) or send it in the "
-                "X-API-Key / Authorization: Bearer header (remote mode). The key is on "
-                "your cloudHPC profile page."
+                "No cloudHPC API key. Set CLOUDHPC_APIKEY (local mode), or in remote mode "
+                "sign in with OAuth or send it in the X-API-Key / Authorization: Bearer "
+                "header. The key is on your cloudHPC profile page: "
+                "https://docs.cloudhpc.cloud/APIKEY/"
             )
         self.api_key = self.api_key.strip()
         self.api_url = self.api_url.rstrip("/")

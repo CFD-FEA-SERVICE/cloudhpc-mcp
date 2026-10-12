@@ -2,8 +2,10 @@
 #   docker build -t cloudhpc-mcp .
 #   docker run -p 8080:8080 cloudhpc-mcp          # endpoint: http://localhost:8080/mcp
 # Clients send their cloudHPC API key with every request in the
-# X-API-Key (or Authorization: Bearer) header. Local-only tools
-# (inspect_case, upload_folder, download_results) are not available in this mode.
+# X-API-Key (or Authorization: Bearer) header, or sign in with OAuth when
+# CLOUDHPC_OAUTH_SECRET and CLOUDHPC_PUBLIC_URL are set (see README, Development).
+# Local-only tools (inspect_case, upload_folder, download_results) are not
+# available in this mode.
 #
 # Two stages: dependencies are installed in a full Python image, then only the
 # installed packages are copied into a distroless image (no shell, no package
