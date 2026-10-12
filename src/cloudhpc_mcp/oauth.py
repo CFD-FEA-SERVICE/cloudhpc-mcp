@@ -40,6 +40,11 @@ from starlette.routing import Route
 from .client import CloudHPCClient, CloudHPCError
 
 PREFIX = "chpc1."
+APIKEY_HELP_URL = "https://docs.cloudhpc.cloud/APIKEY/"
+# cloudHPC logo, served by this server (src/cloudhpc_mcp/static)
+_STATIC = os.path.join(os.path.dirname(__file__), "static")
+_ICONS = {"/favicon.png": "favicon-32.png", "/favicon.ico": "favicon-32.png",
+          "/apple-touch-icon.png": "favicon-160.png"}
 SCOPE = "cloudhpc"
 CODE_TTL = 60
 ACCESS_TTL = 3600
@@ -54,6 +59,11 @@ DEFAULT_REDIRECTS = (
     "https://claude.com/api/mcp/auth_callback",
 )
 _LOCAL_REDIRECT = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?/")
+# Google: Gemini app (oauth-redirect*.googleusercontent.com/r/<id>) and Gemini Enterprise
+_PATTERN_REDIRECTS = (
+    re.compile(r"^https://oauth-redirect(-[a-z0-9]+)*\.googleusercontent\.com/r/[A-Za-z0-9._~-]+$"),
+    re.compile(r"^https://vertexaisearch\.cloud\.google\.com/oauth-redirect$"),
+)
 
 
 # ------------------------------------------------------------------ sealing
@@ -128,7 +138,7 @@ class OAuthProvider:
     def redirect_allowed(self, uri: str) -> bool:
         if not isinstance(uri, str) or len(uri) > 2000:
             return False
-        if _LOCAL_REDIRECT.match(uri):
+        if _LOCAL_REDIRECT.match(uri) or any(p.match(uri) for p in _PATTERN_REDIRECTS):
             return True
         for allowed in self.redirects:
             if allowed.endswith("/"):
@@ -216,7 +226,9 @@ class OAuthProvider:
         except Exception:
             return _oauth_error("invalid_client_metadata", "Body must be JSON")
         uris = body.get("redirect_uris") if isinstance(body, dict) else None
-        if not isinstance(uris, list) or not uris or not all(self.redirect_allowed(u) for u in uris):
+        # keep the allowed ones: clients may list several addresses (e.g. Gemini)
+        uris = [u for u in uris if self.redirect_allowed(u)] if isinstance(uris, list) else []
+        if not uris:
             return _oauth_error("invalid_redirect_uri",
                                 "redirect_uris missing or not allowed by this server")
         name = str(body.get("client_name") or "")[:80]
@@ -283,7 +295,7 @@ class OAuthProvider:
             return _page(_consent_html(client["name"], params["redirect_uri"],
                                        str(form.get("form_token")),
                                        "The API key was not accepted by cloudHPC. Copy it "
-                                       "again from your profile page."), 400)
+                                       "again from your profile page (see the guide below)."), 400)
         code = self.sealer.seal("code", {
             "k": key, "c": params["client_id"], "r": params["redirect_uri"],
             "ch": params["code_challenge"], "res": params.get("resource") or self.base + "/mcp",
@@ -334,8 +346,14 @@ class OAuthProvider:
             return None
         return data.get("k")
 
+    async def icon(self, request: Request) -> Response:
+        with open(os.path.join(_STATIC, _ICONS[request.url.path]), "rb") as f:
+            data = f.read()
+        return Response(data, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=604800"})
+
     def routes(self) -> list[Route]:
-        return [
+        return [*(Route(path, self.icon) for path in _ICONS),
             Route("/.well-known/oauth-protected-resource", self.protected_resource),
             Route("/.well-known/oauth-protected-resource/mcp", self.protected_resource),
             Route("/.well-known/oauth-authorization-server", self.authorization_server),
@@ -429,7 +447,7 @@ async def _fetch_json(url: str) -> Any:
 
 
 _SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; "
                                "form-action 'self' https: http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
@@ -441,7 +459,10 @@ _SECURITY_HEADERS = {
 def _page(body: str, status: int = 200) -> HTMLResponse:
     doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>cloudHPC sign-in</title><style>
+<title>cloudHPC sign-in</title>
+<link rel="icon" href="/favicon.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
 body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f6f9;color:#1b2533;margin:0}}
 main{{max-width:440px;margin:6vh auto;background:#fff;border-radius:12px;padding:28px 24px;box-shadow:0 2px 12px #0001}}
 h1{{font-size:20px;margin:0 0 4px}} p{{line-height:1.45}} .muted{{color:#5b6778;font-size:14px}}
@@ -468,8 +489,10 @@ account.</p>
 <input type="hidden" name="form_token" value="{html.escape(form_token)}">
 <label for="k">cloudHPC API key</label>
 <input id="k" name="api_key" type="password" required spellcheck="false">
-<p class="muted">Copy it from your profile page on cloudHPC. The key is not shown to the
-assistant. To revoke access later, regenerate the key in your profile.</p>
+<p class="muted">Copy it from your profile page on cloudHPC
+(<a href="{APIKEY_HELP_URL}" target="_blank" rel="noopener noreferrer">how to find your API key</a>).
+The key is not shown to the assistant. To revoke access later, regenerate the key in your
+profile.</p>
 <div class="row"><button class="no" name="action" value="deny" formnovalidate>Cancel</button>
 <button class="ok" name="action" value="allow">Connect</button></div>
 </form>"""

@@ -217,3 +217,37 @@ def test_remote_app_wiring(monkeypatch):
                          "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                                     "clientInfo": {"name": "t", "version": "1"}}})
         assert r.status_code == 200 and "serverInfo" in r.text
+
+
+def test_gemini_redirects():
+    p = oauth.OAuthProvider("k", BASE)
+    assert p.redirect_allowed("https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-abc-x_io")
+    assert p.redirect_allowed("https://oauth-redirect-sandbox.googleusercontent.com/r/abc")
+    assert p.redirect_allowed("https://vertexaisearch.cloud.google.com/oauth-redirect")
+    assert not p.redirect_allowed("https://evil.googleusercontent.com/r/abc")
+    assert not p.redirect_allowed("https://oauth-redirect.googleusercontent.com/r/a/../x")
+
+
+def test_register_keeps_only_allowed_redirects(setup):
+    client, _, _ = setup
+    good = "https://oauth-redirect.googleusercontent.com/r/abc"
+    r = client.post("/oauth/register", json={"redirect_uris": [good, "https://evil.example/cb"]})
+    assert r.status_code == 201 and r.json()["redirect_uris"] == [good]
+    _, verifier = None, None
+    r, verifier = _authorize(client, r.json()["client_id"], redirect=good)
+    assert r.status_code == 303 and r.headers["location"].startswith(good + "?")
+
+
+def test_signin_page_branding(setup):
+    client, _, _ = setup
+    reg = client.post("/oauth/register", json={"redirect_uris": [CHATGPT]}).json()
+    _, challenge = _pkce()
+    page = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": reg["client_id"], "redirect_uri": CHATGPT,
+        "code_challenge": challenge, "code_challenge_method": "S256"})
+    assert 'href="/favicon.png"' in page.text
+    assert 'href="https://docs.cloudhpc.cloud/APIKEY/"' in page.text
+    assert "img-src 'self'" in page.headers["content-security-policy"]
+    for path in ("/favicon.png", "/favicon.ico", "/apple-touch-icon.png"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n"
