@@ -225,6 +225,10 @@ class CloudHPCClient:
                 lambda pg, fid=fid: f"/storage/index/name/asc/parent_id/{fid}/{pg}")
         return items
 
+    async def list_folder_id(self, fid: Any) -> list[dict]:
+        """List a folder by its storage id (one listing, no tree walk)."""
+        return await self._paged(lambda pg: f"/storage/index/name/asc/parent_id/{fid}/{pg}")
+
     async def view_by_path(self, path: str) -> dict:
         return await self.call("POST", "/storage/view-by-path", json={"path": path.strip("/")})
 
@@ -284,6 +288,33 @@ class CloudHPCClient:
             raise CloudHPCError(f"Upload failed: {e}") from e
         if r.status_code >= 300:
             raise CloudHPCError(f"Upload failed: HTTP {r.status_code} {r.text[:200]}")
+
+    async def put_bytes(self, url: str, data: bytes) -> None:
+        """Upload a small in-memory file to a signed URL."""
+        try:
+            async with self._http(TRANSFER_TIMEOUT) as http:
+                r = await http.put(url, content=data, headers={
+                    "Content-Type": UPLOAD_CONTENT_TYPE})
+        except httpx.HTTPError as e:
+            raise CloudHPCError(f"Upload failed: {e}") from e
+        if r.status_code >= 300:
+            raise CloudHPCError(f"Upload failed: HTTP {r.status_code} {r.text[:200]}")
+
+    async def get_text(self, url: str, max_bytes: int) -> str:
+        """Read a small text file from a signed URL (error if larger than max_bytes)."""
+        data = b""
+        try:
+            async with self._http(TRANSFER_TIMEOUT) as http:
+                async with http.stream("GET", url) as r:
+                    if r.status_code >= 300:
+                        raise CloudHPCError(f"Download failed: HTTP {r.status_code}")
+                    async for block in r.aiter_bytes(64 * 1024):
+                        data += block
+                        if len(data) > max_bytes:
+                            raise CloudHPCError(f"File larger than {max_bytes // 1024} KB")
+        except httpx.HTTPError as e:
+            raise CloudHPCError(f"Download failed: {e}") from e
+        return data.decode("utf-8", errors="replace")
 
     async def get_file(self, url: str, local_path: str) -> int:
         """Download a signed URL to local_path. Returns bytes written."""

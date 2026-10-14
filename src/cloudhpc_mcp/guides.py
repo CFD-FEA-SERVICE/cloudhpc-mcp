@@ -500,4 +500,9 @@ def guide_for(family: str) -> dict[str, Any] | None:
         g["cores"] = CORES_RULE
     if family in FAQ:
         g["faq"] = FAQ[family]
+    from .live import describe
+    live_info = describe(family)
+    if live_info:
+        g["live_update"] = dict(live_info, how="While RUNNING: live_settings, then "
+                                               "update_running_simulation.")
     return g

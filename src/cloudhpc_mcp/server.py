@@ -34,7 +34,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from . import __version__, advisor, errors, files, guides
+from . import __version__, advisor, errors, files, guides, live
 from .client import ACTIVE_STATUSES, REQUEST_LOG, STARTED_AT, STATUS, CloudHPCClient, CloudHPCError
 
 MODE = os.environ.get("CLOUDHPC_MCP_MODE", "local").lower()  # local | remote | public
@@ -91,6 +91,9 @@ OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
 To resume a stopped run use resume_simulation (FDS and OpenFOAM: same solver,
 vCPU, RAM type and folder). For post-processing on a remote desktop use
 start_desktop and always remind the user to stop it: it is billed until stopped.
+To change a RUNNING simulation without stopping it (OpenFOAM controlDict,
+fvSolution, fvSchemes; FDS .stop; code_saturne control_file; OpenRadioss .ctl)
+read the current file with live_settings, then use update_running_simulation.
 If a tool is missing, the user may have signed in with read-only access.
 
 Never modify, move or delete the user's case files on your own initiative:
@@ -960,6 +963,190 @@ async def resume_simulation(simulation_id: int, confirm: bool = False,
             "next": "Use get_simulation or wait_for_simulation to follow it."}
 
 
+# ------------------------------------------------- live updates (_push)
+
+async def _read_storage_text(c: CloudHPCClient, path: str) -> str | None:
+    """Current content of a small storage file, None if missing or unreadable."""
+    try:
+        return await c.get_text(await c.download_url(path, attempts=3), live.MAX_BYTES)
+    except CloudHPCError:
+        return None
+
+
+def _latest(items: list[dict], n: int = 5) -> list[str]:
+    return sorted((str(i.get("basename")) for i in items), reverse=True)[:n]
+
+
+@mcp.tool(annotations=READ)
+async def live_settings(simulation_id: int, path: str | None = None,
+                        ctx: Context = None) -> dict:
+    """What can be changed in a RUNNING simulation without stopping it, whether
+    an update is still waiting to be applied and, with path, the current
+    content of one of those files (as of the last sync).
+
+    Supported: OpenFOAM (system/controlDict, fvSolution, fvSchemes), FDS
+    (<CHID>.stop), code_saturne (RESU/<run>/control_file), OpenRadioss
+    (<root>_0001.ctl). Read the CURRENT file here before editing it with
+    update_running_simulation: cloudHPC adjusts some inputs at start (e.g. the
+    OpenFOAM controlDict), so the user's local copy can differ.
+    """
+    c = client_for(ctx)
+    try:
+        s = await c.get_simulation(simulation_id)
+    except CloudHPCError as e:
+        return _err(e)
+    script, folder = str(s.get("script", "")), str(s.get("folder", "")).strip("/")
+    fam = advisor.family_of(script)
+    info = live.describe(fam)
+    if info is None:
+        return {"supported": False, "solver": script,
+                "note": f"{script} reads its input only at start: it cannot be changed while "
+                        "running. Stop it, change the case and launch it again (or resume it). "
+                        f"Live updates are available for: {', '.join(live.SUPPORTED)}."}
+    out: dict[str, Any] = {"supported": True, "simulation_id": simulation_id, "solver": script,
+                           "status": STATUS.get(s.get("status")), "folder": folder, **info}
+    if s.get("status") != 30:
+        out["note"] = "Live updates are possible only while the simulation is RUNNING."
+    try:
+        items = await c.list_storage(folder)
+    except CloudHPCError as e:
+        return _err(e)
+    if any(i.get("type") == "dir" and i.get("basename") == live.PUSH_DIR for i in items):
+        out["pending"] = True
+        out["pending_note"] = ("An update is waiting in _push for the sync of the machine "
+                               "(a few minutes). When it is applied, _push disappears and "
+                               "cloudhpc.log shows a 'push applied' line. If it stays there, "
+                               "run sync_simulation.")
+    if path:
+        p = live.clean_path(path)
+        if not p or not live.is_allowed(fam, p):
+            out["error"] = f"'{path}' cannot be changed live for {script}: see files."
+            return out
+        text = await _read_storage_text(c, f"{folder}/{p}")
+        if text is None:
+            out["content_note"] = (f"{p} is not in the storage yet: run sync_simulation, wait "
+                                   "a few minutes and try again.")
+        else:
+            out["path"], out["content"] = p, text
+    return out
+
+
+@mcp.tool(annotations=WRITE)
+async def update_running_simulation(simulation_id: int, files: dict[str, str],
+                                    confirm: bool = False, ctx: Context = None) -> dict:
+    """Change settings of a RUNNING simulation without stopping it.
+
+    files: {relative path in the case folder: full new file content}, e.g.
+    {"system/controlDict": "..."}; only the files listed by live_settings for
+    the solver are accepted (max 5 files, 256 KB each). Send the WHOLE file,
+    based on the current one from live_settings(path=...). The files go to
+    <folder>/_push/ in the storage, then a sync of the simulation is requested
+    automatically: the machine copies them into the case and the solver picks
+    them up. Do not call sync_simulation as well.
+    Changes such as a later endTime make the run longer and cost more. Call
+    first with confirm=false, show the summary and the diff to the user, then
+    confirm=true only after explicit approval.
+    """
+    c = client_for(ctx)
+    try:
+        s = await c.get_simulation(simulation_id)
+    except CloudHPCError as e:
+        return _err(e)
+    script, folder = str(s.get("script", "")), str(s.get("folder", "")).strip("/")
+    fam = advisor.family_of(script)
+    if live.rule_for(fam) is None:
+        return {"error": f"{script} cannot be changed while running. Live updates are "
+                         f"available for: {', '.join(live.SUPPORTED)}."}
+    if s.get("status") != 30:
+        return {"error": f"Simulation {simulation_id} is {STATUS.get(s.get('status'))}: live "
+                         "updates are possible only while it is RUNNING."}
+    if not files:
+        return {"error": "No files given."}
+    if len(files) > live.MAX_FILES:
+        return {"error": f"At most {live.MAX_FILES} files per update."}
+    clean: dict[str, str] = {}
+    problems: list[str] = []
+    for raw, text in files.items():
+        p = live.clean_path(raw)
+        if not p or not live.is_allowed(fam, p):
+            problems.append(f"'{raw}' cannot be changed live for {script}. Allowed: "
+                            f"{', '.join(live.describe(fam)['files'])}.")
+        else:
+            clean[p] = text
+    if problems:
+        return {"error": "Nothing was sent.", "problems": problems}
+    try:
+        items = await c.list_storage(folder)
+    except CloudHPCError as e:
+        return _err(e)
+    folder_files = {str(i.get("basename")) for i in items if i.get("type") == "file"}
+    pending = any(i.get("type") == "dir" and i.get("basename") == live.PUSH_DIR for i in items)
+    notes: list[str] = []
+    diffs: dict[str, str] = {}
+    for p, text in clean.items():
+        current = None
+        if fam in ("openfoam", "codesaturne"):
+            current = await _read_storage_text(c, f"{folder}/{p}")
+        if fam == "codesaturne":
+            try:
+                await c.view_by_path(f"{folder}/{p.rsplit('/', 1)[0]}")
+            except CloudHPCError:
+                problems.append(f"Run folder {p.rsplit('/', 1)[0]} not found in the storage "
+                                "(list_storage shows the RESU/<run> folders after a sync).")
+        errs, extra = live.check(fam, p, text, current, folder_files)
+        problems += errs
+        notes += extra
+        d = live.diff(p, current, text)
+        if d:
+            diffs[p] = d
+        elif fam in ("openfoam", "codesaturne"):
+            notes.append(f"{p}: the current file is not in the storage, so no diff is shown "
+                         "(sync_simulation uploads it).")
+    if problems:
+        return {"error": "Nothing was sent.", "problems": problems}
+    if all(d == "(no change)" for d in diffs.values()) and len(diffs) == len(clean):
+        return {"error": "The new files are identical to the current ones: nothing to send."}
+    if pending:
+        notes.append("A previous update is still waiting in _push: both are applied "
+                     "together (same file: the newer one wins).")
+    summary = (f"Update running simulation {simulation_id} ({script}, folder '{folder}'): "
+               f"upload {', '.join(clean)} and sync the simulation so the machine copies "
+               "them into the case now. " + " ".join(notes))
+    shown = summary + ("\n\n" + "\n\n".join(diffs.values()) if diffs else "")
+    stop = await _confirmed(ctx, shown, confirm)
+    if stop:
+        if diffs:
+            stop["diff"] = diffs
+        return stop
+    sent = []
+    try:
+        for p, text in clean.items():
+            # the API takes the case folder as dirname; sub-folders go in the file name
+            await c.put_bytes(await c.upload_url(folder, f"{live.PUSH_DIR}/{p}"),
+                              text.encode())
+            sent.append(p)
+        await c.refresh_cache()
+    except CloudHPCError as e:
+        out = _err(e)
+        out["sent_before_error"] = sent
+        return out
+    out = {"sent": sent, "storage_folder": f"{folder}/{live.PUSH_DIR}", "summary": summary}
+    try:
+        await c.sync_simulation(simulation_id)
+        out["sync_requested"] = True
+        out["next"] = ("The sync copies the files into the case within a few minutes: then "
+                       "_push disappears from the storage and cloudhpc.log shows 'push "
+                       "applied' (check with live_settings). Applied "
+                       + live.rule_for(fam)["applied_when"] + ".")
+    except CloudHPCError as e:
+        out["sync_requested"] = False
+        out["sync_error"] = str(e)
+        out["next"] = ("The files are in _push but the sync request failed: they are applied "
+                       "at the next sync (sync_simulation can be called again).")
+    out["note"] = "The user's local copy of these files is now out of date."
+    return out
+
+
 @mcp.tool(annotations=READ)
 async def open_remote_desktop(simulation_id: int, ctx: Context = None) -> dict:
     """Get the browser remote-desktop (VNC) link of a running simulation.
@@ -1174,11 +1361,13 @@ TOOL_TITLES = {
     "download_results": "Download results",
     "start_desktop": "Start remote desktop",
     "resume_simulation": "Resume simulation",
+    "live_settings": "Read live settings",
+    "update_running_simulation": "Update running simulation",
 }
 # change data or cost money: always confirmed by the client
 DESTRUCTIVE_TOOLS = {"delete_storage", "launch_simulation", "stop_simulation",
                      "sync_simulation", "upload_folder", "download_results",
-                     "start_desktop", "resume_simulation"}
+                     "start_desktop", "resume_simulation", "update_running_simulation"}
 # not offered to read-only OAuth sign-ins (also tools that give write access)
 READONLY_BLOCKED = DESTRUCTIVE_TOOLS | {"get_upload_link", "open_remote_desktop"}
 

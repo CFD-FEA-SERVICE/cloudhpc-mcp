@@ -1098,3 +1098,97 @@ async def test_desktop_and_postprocess_guides():
     g = await server.solver_guide("cloudHPC-postProcess")
     assert g["family"] == "postprocess" and "POSTPROCESS.tar.gz" in g["outputs"]
     assert files.is_result_file("POSTPROCESS.tar.gz")
+
+
+# ------------------------------------------------------- live updates (_push)
+
+CONTROL = """FoamFile { version 2.0; class dictionary; object controlDict; }
+application simpleFoam;
+startFrom latestTime;
+endTime 1000;
+writeInterval 100;
+runTimeModifiable true;
+"""
+
+
+def test_live_rules():
+    from cloudhpc_mcp import live
+    assert live.clean_path("./system/controlDict") == "system/controlDict"
+    for bad in ("../x", "/etc/passwd", "system/../0/U", "a//b", ""):
+        assert live.clean_path(bad) is None
+    assert live.is_allowed("openfoam", "system/controlDict")
+    assert not live.is_allowed("openfoam", "constant/transportProperties")
+    assert not live.is_allowed("openfoam", "system/controlDict.orig")
+    assert live.is_allowed("fds", "room.stop") and not live.is_allowed("fds", "x/room.stop")
+    assert live.is_allowed("codesaturne", "RESU/20260101-1200/control_file")
+    assert live.is_allowed("openradioss", "crash_0001.ctl")
+    assert live.rule_for("calculix") is None
+
+
+def test_live_checks():
+    from cloudhpc_mcp import live
+    errs, notes = live.check("openfoam", "system/controlDict",
+                             CONTROL.replace("1000", "2000"), CONTROL, set())
+    assert not errs and any("costs more" in n for n in notes)
+    errs, _ = live.check("openfoam", "system/controlDict",
+                         CONTROL.replace("runTimeModifiable true", "runTimeModifiable false"),
+                         CONTROL, set())
+    assert any("runTimeModifiable" in e for e in errs)
+    errs, _ = live.check("openfoam", "system/fvSolution", "relaxationFactors { p 0.3; }", None, set())
+    assert any("FoamFile" in e for e in errs)
+    errs, _ = live.check("fds", "room.stop", "", None, {"room.fds"})
+    assert not errs
+    errs, _ = live.check("fds", "other.stop", "abc", None, {"room.fds"})
+    assert len(errs) == 2 and "room" in errs[0]
+    errs, _ = live.check("openradioss", "crash_0001.ctl", "/ANIM\n", None, {"crash_0001.rad"})
+    assert not errs
+    errs, _ = live.check("openradioss", "crash_0001.ctl", "ANIM\n", None, {"crash_0001.rad"})
+    assert errs
+    assert "+endTime 2000;" in live.diff("system/controlDict", CONTROL,
+                                         CONTROL.replace("1000", "2000"))
+
+
+async def test_update_running_simulation_flow(api):
+    api.result_blob = CONTROL.encode()          # current controlDict in storage
+    new = CONTROL.replace("endTime 1000", "endTime 1500")
+    r = await server.update_running_simulation(10030, {"system/controlDict": new})
+    assert r["confirmation_required"] and "costs more" in r["summary"]
+    assert "+endTime 1500;" in r["diff"]["system/controlDict"]
+    assert api.uploaded is None
+    r = await server.update_running_simulation(10030, {"system/controlDict": new}, confirm=True)
+    assert r["sent"] == ["system/controlDict"]
+    assert api.upload_req["dirname"] == "caseA"
+    assert api.upload_req["filename"] == "_push/system/controlDict"
+    assert api.uploaded == new.encode()
+    assert r["sync_requested"] and ("PUT", "/api/v2/simulation/sync/10030") in api.calls
+
+
+async def test_update_running_simulation_refusals(api):
+    api.result_blob = CONTROL.encode()
+    r = await server.update_running_simulation(10030, {"0/U": "x"}, confirm=True)
+    assert not any(c[1].startswith("/api/v2/simulation/sync/") for c in api.calls)
+    assert "Nothing was sent" in r["error"] and api.uploaded is None
+    r = await server.update_running_simulation(10030, {"../../etc/passwd": "x"}, confirm=True)
+    assert "Nothing was sent" in r["error"]
+    r = await server.update_running_simulation(10030, {"system/controlDict": CONTROL}, confirm=True)
+    assert "identical" in r["error"]
+    api.sim_status = 10
+    r = await server.update_running_simulation(10030, {"system/controlDict": "x"}, confirm=True)
+    assert "only while it is RUNNING" in r["error"]
+    assert api.uploaded is None
+
+
+async def test_live_settings(api):
+    api.result_blob = CONTROL.encode()
+    r = await server.live_settings(10030, path="system/controlDict")
+    assert r["supported"] and r["content"] == CONTROL
+    assert "system/fvSolution" in r["files"]
+    r = await server.live_settings(10030, path="constant/g")
+    assert "cannot be changed live" in r["error"]
+
+
+async def test_live_update_in_guide_and_readonly():
+    g = await server.solver_guide("openFoam-v2406")
+    assert "update_running_simulation" in g["live_update"]["how"]
+    assert "update_running_simulation" in server.READONLY_BLOCKED
+    assert "live_settings" not in server.READONLY_BLOCKED

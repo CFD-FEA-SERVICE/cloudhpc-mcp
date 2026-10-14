@@ -29,6 +29,7 @@ and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.clou
 - *"Run it on cloudHPC and download the results when it finishes."*
 - *"What is the status of my running simulations?"*
 - *"My last run failed: what went wrong?"*
+- *"My OpenFOAM run is converging well: extend endTime to 2000 without stopping it."*
 
 ## Safe first prompts
 
@@ -62,6 +63,8 @@ connect with **read-only access** (see [Sign-in with OAuth](#sign-in-with-oauth)
 | `stop_simulation` | Soft or hard stop (**asks for confirmation**) |
 | `resume_simulation` | Resume a stopped run with the same solver, vCPU, RAM type and folder (FDS and OpenFOAM; **asks for confirmation**) |
 | `start_desktop` | Start a Linux or Windows remote desktop for post-processing; billed until you stop it (**asks for confirmation**) |
+| `live_settings` | What can be changed in a running simulation, the current content of those files and the state of previous live updates |
+| `update_running_simulation` | Change a running simulation without stopping it: OpenFOAM `system/controlDict`, `fvSolution`, `fvSchemes`; FDS `<CHID>.stop`; code_saturne `RESU/<run>/control_file`; OpenRadioss `<root>_0001.ctl`. The files go to the `_push` folder of the case and a sync is requested automatically, so the machine applies them within a few minutes (**asks for confirmation**) |
 | `open_remote_desktop` | Browser remote-desktop link of a running job |
 | `list_storage`, `list_results` | Browse your storage and result archives |
 | `download_results` ¹ | Download result archives and extract them locally |
