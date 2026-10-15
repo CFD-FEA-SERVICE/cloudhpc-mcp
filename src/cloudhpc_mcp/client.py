@@ -210,7 +210,21 @@ class CloudHPCClient:
 
     # --------------------------------------------------------------- storage
     async def list_storage(self, folder: str = "") -> list[dict]:
-        """List the content of a storage folder ('' = root)."""
+        """List the content of a storage folder ('' = root).
+
+        The API caches the storage index: a folder created after the cache was
+        built (e.g. by a running simulation) is missing until the cache is
+        refreshed, so on 'not found' the cache is refreshed once and retried.
+        """
+        try:
+            return await self._list_storage(folder)
+        except CloudHPCError as e:
+            if not folder.strip("/") or "not found" not in str(e):
+                raise
+        await self.refresh_cache()
+        return await self._list_storage(folder)
+
+    async def _list_storage(self, folder: str) -> list[dict]:
         # Folder ids are resolved by walking the tree from the root (the same
         # approach used by the bash cloudHPCexec), one listing per level.
         items = await self._paged(lambda pg: f"/storage/index/name/asc/{pg}")

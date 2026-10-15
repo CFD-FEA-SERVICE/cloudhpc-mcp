@@ -1192,3 +1192,9 @@ async def test_live_update_in_guide_and_readonly():
     assert "update_running_simulation" in g["live_update"]["how"]
     assert "update_running_simulation" in server.READONLY_BLOCKED
     assert "live_settings" not in server.READONLY_BLOCKED
+
+
+async def test_list_storage_refreshes_cache_on_missing_folder(api):
+    r = await server.list_storage("nope")
+    assert "error" in r
+    assert ("DELETE", "/api/v2/user/delete-cache") in api.calls
