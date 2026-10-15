@@ -366,6 +366,13 @@ MISSING_FILES_HINT = (
     "simulation can be run again.")
 
 
+PUSH_CONSUMED_HINT = (
+    "A missing _push folder is normal: the simulation machine removes it when it applies a "
+    "live update (update_running_simulation), and the final sync of a run removes it too. "
+    "The update was applied: check 'push applied' in the simulation output "
+    "(get_simulation with include_log=true).")
+
+
 def _is_missing(msg: str) -> bool:
     m = msg.lower()
     return "not found" in m or "technical problem" in m or "no download link" in m
@@ -376,7 +383,8 @@ def _err(e: Exception, files_hint: bool = True) -> dict:
     missing object. False for calls that do not touch storage or simulations."""
     out: dict[str, Any] = {"error": str(e)}
     if files_hint and _is_missing(str(e)):
-        out["hint"] = MISSING_FILES_HINT
+        pushed = re.search(rf"(?<![\w-]){live.PUSH_DIR}(?![\w-])", str(e))
+        out["hint"] = PUSH_CONSUMED_HINT if pushed else MISSING_FILES_HINT
     return out
 
 

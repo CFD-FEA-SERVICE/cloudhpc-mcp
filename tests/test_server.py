@@ -1198,3 +1198,10 @@ async def test_list_storage_refreshes_cache_on_missing_folder(api):
     r = await server.list_storage("nope")
     assert "error" in r
     assert ("DELETE", "/api/v2/user/delete-cache") in api.calls
+
+
+async def test_missing_push_folder_is_not_reported_as_deleted(api):
+    r = await server.list_storage("caseA/_push")
+    assert "push applied" in r["hint"] and "60 days" not in r["hint"]
+    r = await server.list_storage("nope")
+    assert "60 days" in r["hint"]
