@@ -2,8 +2,8 @@
 
 Files written to <case folder>/_push/<relative path> in the storage are moved
 by the simulation machine into the case folder at the sync that
-update_running_simulation requests; cloudhpc.log
-then shows a "push applied" line. Which files are accepted is checked here.
+update_running_simulation requests; the simulation
+output then shows a "push applied" line. Which files are accepted is checked here.
 
 Only solvers that re-read a file while running are supported: anything else
 would be copied but ignored until the next run.

@@ -1015,7 +1015,8 @@ async def live_settings(simulation_id: int, path: str | None = None,
         out["pending"] = True
         out["pending_note"] = ("An update is waiting in _push for the sync of the machine "
                                "(a few minutes). When it is applied, _push disappears and "
-                               "cloudhpc.log shows a 'push applied' line. If it stays there, "
+                               "the simulation output (get_simulation with include_log=true) shows a 'push "
+                               "applied' line. If it stays there, "
                                "run sync_simulation.")
     if path:
         p = live.clean_path(path)
@@ -1135,8 +1136,8 @@ async def update_running_simulation(simulation_id: int, files: dict[str, str],
         await c.sync_simulation(simulation_id)
         out["sync_requested"] = True
         out["next"] = ("The sync copies the files into the case within a few minutes: then "
-                       "_push disappears from the storage and cloudhpc.log shows 'push "
-                       "applied' (check with live_settings). Applied "
+                       "_push disappears from the storage and the simulation output "
+                       "(get_simulation with include_log=true) shows 'push applied'. Applied "
                        + live.rule_for(fam)["applied_when"] + ".")
     except CloudHPCError as e:
         out["sync_requested"] = False
