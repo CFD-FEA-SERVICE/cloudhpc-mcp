@@ -313,6 +313,14 @@ def _fds_removed_files(folder: str) -> list[str]:
     return out
 
 
+def _read_text(path: str) -> str:
+    try:
+        with open(path, "r", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
     """Checks on a local case (output of advisor.inspect_case) before upload."""
     issues: list[dict[str, str]] = []
@@ -528,6 +536,91 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         if py and not info.get("has_requirements"):
             add("info", "Python scripts without requirements.txt: only the standard library "
                         "(and preinstalled system packages) will be available.", "")
+
+    if fam == "precice":
+        pc = info.get("precice", {})
+        parts, folders = pc.get("participants", []), pc.get("folders", {})
+        if len(parts) < 2:
+            add("error", "precice-config.xml defines fewer than two participants.", "")
+        for p in parts:
+            got = folders.get(p, [])
+            if not got:
+                add("error", f"Participant '{p}' has no OpenFOAM or CalculiX folder (OpenFOAM: "
+                             "system/controlDict + system/preciceDict with 'participant "
+                             f"{p};'; CalculiX: config.yml + .inp with *STEP).", "")
+            elif len(got) > 1:
+                add("error", f"Participant '{p}' is provided by several folders ({', '.join(got)}): "
+                             "keep only the one to run.", "")
+        for d, kind in pc.get("solver_of_folder", {}).items():
+            path = os.path.join(folder, d)
+            if kind == "openfoam" and not (glob.glob(os.path.join(path, "constant", "polyMesh", "faces*"))
+                                           or os.path.exists(os.path.join(path, "system", "blockMeshDict"))
+                                           or os.path.exists(os.path.join(path, "system", "snappyHexMeshDict"))):
+                add("error", f"{d}: no mesh (constant/polyMesh) and no blockMeshDict or "
+                             "snappyHexMeshDict to generate it.", "")
+            if kind == "calculix":
+                inps = glob.glob(os.path.join(path, "*.inp"))
+                if not any(re.search(r"^\*STEP", _read_text(i), re.M | re.I) for i in inps):
+                    add("error", f"{d}: no .inp file with *STEP.", "")
+        if pc.get("ignored_folders"):
+            add("info", "Ignored folders: " + "; ".join(pc["ignored_folders"]), "")
+        if pc.get("absolute_paths"):
+            add("warning", "precice-config.xml uses absolute directories: use relative paths "
+                           "as in the tutorials.", "")
+        if os.path.exists(os.path.join(folder, "run.sh")) or glob.glob(os.path.join(folder, "*", "run.sh")):
+            add("info", "run.sh / clean.sh scripts are not executed on cloudHPC: settings made "
+                        "only there are not applied.", "")
+
+    if fam == "lammps":
+        if not info.get("main_inputs"):
+            add("error", "No LAMMPS input with a run, minimize or rerun command.", "")
+        if info.get("missing_files"):
+            add("error", "Files read by the input are missing from the folder: "
+                         + ", ".join(info["missing_files"][:8]), "")
+        if info.get("undefined_variables"):
+            add("warning", "Variables used but not defined with 'variable' in the inputs: "
+                           + ", ".join(info["undefined_variables"][:8])
+                           + ". Command-line variables (-var) are not passed on cloudHPC: "
+                             "define them in the input.", "")
+
+    if fam == "palabos":
+        for c in info.get("cases", []):
+            if c["reads_argument"] and len(c["xml_files"]) > 1:
+                add("error", f"{c['main']} reads a parameter file but its folder has several "
+                             f".xml files ({', '.join(c['xml_files'])}): keep only one.", "")
+            elif c["reads_argument"] and not c["xml_files"]:
+                add("warning", f"{c['main']} reads a command-line argument but there is no .xml "
+                               "parameter file next to it: it runs without arguments.", "")
+        if os.path.exists(os.path.join(folder, "CMakeLists.txt")) or os.path.exists(os.path.join(folder, "Makefile")):
+            add("info", "CMakeLists.txt / Makefile are not used: cloudHPC compiles each .cpp with "
+                        "main() against Palabos 2.3.0.", "")
+
+    if fam == "freefem":
+        if not info.get("main_scripts"):
+            add("error", "Every .edp is included by another one: no main script to run.", "")
+        for e in info.get("reads_keyboard", []):
+            add("error", f"{e} reads from the keyboard (cin >>): there is no keyboard input on "
+                         "cloudHPC, set the value in the script.", "")
+
+    if fam == "tflows":
+        for c in info.get("tflows_cases", []):
+            where = "" if c["folder"] == "." else f"{c['folder']}: "
+            if not c["problem_name"]:
+                add("error", f"{where}PROBLEM_NAME missing in control.", "")
+            elif not (c["grid_ready"] or c["generate_scripts"] or c["convert_scripts"]
+                      or c["grid_archives"]):
+                add("error", f"{where}no grid: expected {c['problem_name']}.cfn/.dim, "
+                             "generate*.scr (+ .dom) or convert*.scr (+ mesh file).", "")
+            if c["user_mod"]:
+                add("warning", f"{where}User_Mod is not compiled on cloudHPC: the standard "
+                               "Process runs without your user functions.", "")
+            if not c["backup_interval"]:
+                add("info", f"{where}no BACKUP_SAVE_INTERVAL in control: a stopped or "
+                            "preempted run cannot be resumed.", "")
+
+    if fam == "dualsphysics" and info.get("user_scripts"):
+        add("info", "Shell scripts (e.g. xCase*.sh) are not executed: put solver parameters in "
+                    "<execution><parameters> of the _Def.xml.", "")
 
     if fam == "code_aster":
         nb = info.get("mpi_nbcpu")

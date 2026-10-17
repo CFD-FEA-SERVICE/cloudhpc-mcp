@@ -439,6 +439,211 @@ GUIDES: dict[str, dict[str, Any]] = {
         "logs": [],
         "outputs": "POSTPROCESS.tar.gz in the case folder.",
         "docs": DOCS,
+    },    "precice": {
+        "name": "preCICE 3.3.1 (coupled simulations with OpenFOAM and CalculiX participants)",
+        "input": [
+            "precice-config.xml at the root of the case folder.",
+            "One subfolder per participant, as in the preCICE tutorials. OpenFOAM participant: "
+            "a folder with system/controlDict and system/preciceDict containing "
+            "'participant <name>;'. CalculiX participant: a folder with config.yml (the "
+            "participant name under 'participants:') and an .inp file containing *STEP.",
+            "Each participant of precice-config.xml needs exactly ONE folder. The tutorials "
+            "often ship alternatives for the same participant (e.g. solid-calculix and "
+            "solid-openfoam): keep only the one to run, otherwise the run stops. Folders whose "
+            "participant is not in precice-config.xml are ignored.",
+            "Only OpenFOAM and CalculiX participants are supported; folders that contain only "
+            "a run.sh (other solvers) are ignored.",
+            "Paths in precice-config.xml and in the adapters (e.g. exchange-directory) must be "
+            "relative, as in the tutorials.",
+        ],
+        "automatic": [
+            "The tutorials' run.sh / clean.sh scripts are NOT executed: each participant's "
+            "solver is started directly from its folder, so put every setting in the case "
+            "files, not in those scripts.",
+            "All participants start together; if one fails, the others are stopped.",
+            "OpenFOAM participants: the newest installed OpenFOAM with the preCICE adapter is "
+            "used; 0.orig is copied to 0 if 0 is missing; the mesh is generated with "
+            "blockMesh and/or snappyHexMesh if constant/polyMesh is missing; setFields runs if "
+            "system/setFieldsDict exists. With more than one core the case is decomposed "
+            "(numberOfSubdomains set automatically; methods other than scotch, ptscotch, metis "
+            "or kahip are replaced by scotch; decomposeParDict is created if missing), run in "
+            "parallel and reconstructed at the end.",
+            "CalculiX participants: the first .inp file containing *STEP is run with the "
+            "participant name.",
+            "Exchange folders (precice-run) left by a previous run are removed before start.",
+        ],
+        "parallel": "The physical cores are split among the participants: each CalculiX "
+                    "participant gets an equal share, at most 8 threads when OpenFOAM "
+                    "participants are present (CalculiX scales little beyond); the remaining "
+                    "cores are split equally among the OpenFOAM participants (one MPI process "
+                    "per core). The split is printed at the start of the log.",
+        "resources": "Use highcore or hypercore (physical cores). Tutorials run fine on 4-8 "
+                     "vCPU; size larger cases on the OpenFOAM mesh (~50,000-100,000 cells per "
+                     "core) plus up to 8 cores per CalculiX participant.",
+        "restart": [
+            "Coupled runs cannot be resumed (preCICE writes no checkpoint): relaunching an "
+            "incomplete run starts it from the beginning. A completed run is not run again "
+            "in the same folder.",
+        ],
+        "logs": ["log.<participant> in each participant folder",
+                 "OpenFOAM steps: log.blockMesh, log.snappyHexMesh, log.decomposePar, "
+                 "log.reconstructPar", "simulation output lines are prefixed with [participant]"],
+        "docs": "https://precice.org/docs.html",
+    },
+    "lammps": {
+        "name": "LAMMPS (molecular dynamics)",
+        "input": [
+            "LAMMPS input files at the root of the case folder, named in.*, *.in, *.lmp or "
+            "*.lammps, with every file they read (read_data, include, potentials).",
+            "Main inputs are the files with a run, minimize or rerun command. Files without "
+            "them (data files, settings) and files loaded by another input with 'include' are "
+            "not run on their own.",
+            "Several main inputs run one after the other, each with the whole machine.",
+            "Command-line variables (-var) cannot be passed: define every variable inside the "
+            "input with the 'variable' command. The input cannot wait for keyboard input.",
+        ],
+        "automatic": [
+            "MPI build: one MPI process per physical core, one thread each.",
+            "On GPU instances, if the installed LAMMPS has the GPU package, GPU acceleration "
+            "(gpu suffix, all GPUs) is switched on automatically; otherwise it runs on CPU and "
+            "a warning is printed.",
+            "The screen output is saved in log.lammps (log.<input>.lammps with several "
+            "inputs); LAMMPS' own log file is not written, so 'log' commands in the input are "
+            "not needed.",
+        ],
+        "parallel": "One MPI process per physical core: use highcore or hypercore.",
+        "resources": "Keep at least ~1,000-2,000 atoms per core: below that, extra cores do "
+                     "not speed up the run. 8 vCPU highcore is a good start for 10^4-10^5 "
+                     "atoms; use a GPU instance only for large systems with GPU-enabled pair "
+                     "styles.",
+        "restart": [
+            "LAMMPS continues a run only from a restart file with an input that starts with "
+            "read_restart. Write restart files during long runs (restart command) and, to "
+            "continue, add a new input that reads them. Relaunching the folder skips the "
+            "inputs already completed and runs the others from the start.",
+        ],
+        "logs": ["log.lammps (or log.<input>.lammps)"],
+        "docs": "https://docs.lammps.org",
+    },
+    "palabos": {
+        "name": "Palabos 2.3.0 (lattice Boltzmann, C++ library)",
+        "input": [
+            "Your C++ program: one or more .cpp files with main(), in the case folder or in "
+            "its direct subfolders (one case per main()). Other .cpp files without main() in "
+            "the same folder are compiled together with it; headers next to them are found.",
+            "Your CMakeLists.txt or Makefile is NOT used: cloudHPC compiles each program with "
+            "Palabos 2.3.0 (C++17, optimised, MPI). Code that builds with the standard "
+            "Palabos examples' CMake setup builds here too.",
+            "Parameter file: if the program reads argv(1) and its folder contains exactly one "
+            ".xml file, that file is passed as the argument (like param.xml in the "
+            "showCases). Several .xml files stop the run: keep one. Only this one argument "
+            "is passed.",
+            "Geometry archives (.tgz, .tar.gz, e.g. STL files) are extracted automatically if "
+            "their content is missing.",
+        ],
+        "automatic": [
+            "Output folders written in setOutputDir(\"...\") (relative paths) are created "
+            "before the run.",
+            "Cases run one after the other, each with all physical cores (MPI).",
+        ],
+        "parallel": "One MPI process per physical core: use highcore or hypercore.",
+        "resources": "8 vCPU highcore as a start; memory grows with the lattice size, so "
+                     "large 3D lattices may need more vCPU for the RAM.",
+        "restart": [
+            "Checkpointing is part of your program (Palabos save/load functions). Relaunching "
+            "the folder skips the cases already completed; the others start again.",
+        ],
+        "logs": ["log.compile (compilation errors are here)", "log.<program name>"],
+        "docs": "https://palabos.unige.ch",
+    },
+    "freefem": {
+        "name": "FreeFEM 4.15 (finite elements, .edp scripts)",
+        "input": [
+            ".edp scripts at the root of the case folder. Scripts loaded by another .edp with "
+            "include are not run on their own (include files are usually .idp).",
+            "Graphics are off: plot() windows are not shown, so save results to files "
+            "(e.g. savevtk, savemesh, ofstream).",
+            "No keyboard input: scripts must not read from cin.",
+        ],
+        "automatic": [
+            "MPI scripts are recognised from mpirank/mpisize, processor(), broadcast(), "
+            "buildDmesh, createMat, macro dimension, or load \"PETSc\", \"SLEPc\", \"hpddm\", "
+            "\"MUMPS_mpi\", \"parmetis\", \"ptscotch\" (also in the included files). To force "
+            "MPI, add a comment containing the words \"run with MPI\" to the script.",
+            "MPI scripts run one at a time with one process per physical core.",
+            "Sequential scripts run in parallel with each other; the physical cores are "
+            "shared among them as threads for multi-threaded solvers.",
+        ],
+        "parallel": "MPI scripts: one process per physical core (highcore or hypercore). "
+                    "A single sequential script uses few cores: 2-4 vCPU are enough.",
+        "resources": "Sequential scripts: 2-4 vCPU (several scripts run side by side on "
+                     "more). MPI scripts (PETSc, hpddm): 8+ vCPU on highcore or hypercore.",
+        "restart": [
+            "FreeFEM has no generic restart: relaunching the folder skips the scripts already "
+            "completed and runs the others from the start.",
+        ],
+        "logs": ["log.<script name>"],
+        "docs": "https://doc.freefem.org",
+    },
+    "tflows": {
+        "name": "T-Flows 1.1 (unstructured finite-volume CFD)",
+        "input": [
+            "A 'control' file in the case folder (or in each subfolder, run one after the "
+            "other), with PROBLEM_NAME.",
+            "Grid, one of: <PROBLEM_NAME>.cfn and .dim already made; generate*.scr scripts "
+            "with their .dom file (run with Generate); convert*.scr scripts with the mesh "
+            "file (Gmsh 4.1 .msh, Fluent, ...; run with Convert). A .geo without .msh is "
+            "meshed with Gmsh (format 4.1) when available.",
+            "Grid archives (.tgz, .tar.gz, .gz) are extracted if their content is missing.",
+            "User_Mod folders are NOT compiled: the standard Process is used (a warning is "
+            "printed). Cases that need user functions cannot run as they are.",
+        ],
+        "automatic": [
+            "divide*.scr is ignored: the grid is divided into one part per physical core.",
+            "Process runs with MPI when the installed build supports it, otherwise with "
+            "OpenMP threads on the physical cores (shown at the start of the log).",
+        ],
+        "parallel": "One process (or thread) per physical core: use highcore or hypercore.",
+        "resources": "Start from ~50,000 cells per core; 8 vCPU highcore for small cases.",
+        "restart": [
+            "Set BACKUP_SAVE_INTERVAL in control for long runs, especially on preemptible "
+            "instances. Relaunch in the SAME storage folder: if <PROBLEM_NAME>-tsNNNNNN.backup "
+            "files exist, the run restarts from the latest one automatically (your control "
+            "file is restored at the end). Without backups it starts from scratch.",
+        ],
+        "logs": ["log.Generate / log.Convert / log.gmsh", "log.Divide", "log.Process"],
+        "docs": "https://github.com/DelNov/T-Flows",
+    },
+    "dualsphysics": {
+        "name": "DualSPHysics 5.4 (SPH)",
+        "input": [
+            "One or more <name>_Def.xml case definitions: each runs GenCase, the solver and "
+            "the post-processing. The official examples work as they are (their _Def.xml).",
+            "Alternatively a case already generated by GenCase: <name>.xml + <name>.bi4 in "
+            "the folder or in one subfolder (solver and post-processing only).",
+            "The examples' xCase*.sh scripts are NOT executed: options set only there are not "
+            "applied. Put the solver parameters in <execution><parameters> of the _Def.xml.",
+        ],
+        "automatic": [
+            "Output in <name>_out/: GenCase files, data/ (Part_*.bi4), particles/ with VTK "
+            "files of fluid (PartFluid) and boundaries (PartBound), and floatinginfo/ with "
+            "the motion of floating bodies when the case has <floating>.",
+            "GPU instances: one case per GPU, several cases in parallel (GPUs beyond the "
+            "number of cases stay idle). CPU instances: cases one after the other, each "
+            "using all vCPU.",
+        ],
+        "parallel": "GPU: one case per GPU. CPU: OpenMP threads on all vCPU (hyperthreaded "
+                    "types are fine).",
+        "resources": "Use a GPU instance (e.g. basegpu): DualSPHysics is many times faster "
+                     "on GPU. CPU only for small tests (highcpu, all vCPU).",
+        "restart": [
+            "Relaunch in the SAME storage folder: if Part_*.bi4 files exist the run restarts "
+            "from the last PART into a new data_rNNNN folder (previous data are kept). Cases "
+            "already completed are not recomputed.",
+        ],
+        "logs": ["<name>_out/log.GenCase", "<name>_out/log.DualSPHysics",
+                 "<name>_out/log.PartVTK, log.FloatingInfo"],
+        "docs": "https://dual.sphysics.org",
     },
 }
 
@@ -459,6 +664,13 @@ EXTRA_FAMILIES = {
     "ubuntu-static": "desktop",
     "windows-static": "desktop",
     "cloudhpc-postprocess": "postprocess",
+    "precice": "precice",
+    "lammps": "lammps",
+    "palabos": "palabos",
+    "freefem": "freefem",
+    "t-flows": "tflows",
+    "tflows": "tflows",
+    "dualsphysics": "dualsphysics",
 }
 
 
@@ -472,7 +684,7 @@ CORES_RULE = (
     "hypercore."
 )
 PHYSICAL_CORE_FAMILIES = {"openfoam", "dafoam", "su2", "codesaturne", "xbeach", "telemac",
-                          "liggghts"}
+                          "liggghts", "precice", "lammps", "palabos", "freefem", "tflows"}
 
 FAQ: dict[str, list[dict[str, str]]] = {
     "openfoam": [

@@ -40,6 +40,12 @@ FAMILIES = {
     "swan": "SWAN",
     "xbeach": "XBeach",
     "custom": "Custom scripts (bash / Python)",
+    "precice": "preCICE (coupled OpenFOAM / CalculiX)",
+    "lammps": "LAMMPS",
+    "palabos": "Palabos",
+    "freefem": "FreeFEM",
+    "tflows": "T-Flows",
+    "dualsphysics": "DualSPHysics",
     "desktop": "Remote desktop (static instance)",
     "postprocess": "cloudHPC automatic post-processing",
     "other": "Other / generic",
@@ -47,7 +53,8 @@ FAMILIES = {
 
 # solvers that only use physical cores (MPI): no hyperthreading
 # (OpenRadioss uses OpenMP threads on the hyperthreads, so it is not listed)
-NO_HYPERTHREAD = {"openfoam", "su2", "dafoam", "liggghts", "telemac", "codesaturne", "xbeach"}
+NO_HYPERTHREAD = {"openfoam", "su2", "dafoam", "liggghts", "telemac", "codesaturne", "xbeach",
+                  "precice", "lammps", "palabos", "tflows"}
 
 HT_RAM_LADDER = ["highcpu", "standard", "highmem"]
 PHYSICAL_RAM = ["highcore", "hypercore"]
@@ -63,7 +70,10 @@ def family_of(script: str) -> str:
                         ("codesaturne", "codesaturne"), ("code_saturne", "codesaturne"),
                         ("swan", "swan"), ("xbeach", "xbeach"), ("custom-script", "custom"),
                         ("ubuntu-static", "desktop"), ("windows-static", "desktop"),
-                        ("cloudhpc-postprocess", "postprocess")):
+                        ("cloudhpc-postprocess", "postprocess"), ("precice", "precice"),
+                        ("lammps", "lammps"), ("palabos", "palabos"), ("freefem", "freefem"),
+                        ("t-flows", "tflows"), ("tflows", "tflows"),
+                        ("dualsphysics", "dualsphysics")):
         if s.startswith(prefix):
             return fam
     if s.startswith("fds"):
@@ -218,6 +228,112 @@ def _count_inp_nodes(path: str) -> int | None:
     return nodes or None
 
 
+def _read(path: str) -> str:
+    try:
+        with open(path, "r", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _precice_case(folder: str) -> dict[str, Any]:
+    """Participants of precice-config.xml and the folders that provide them."""
+    config = _read(os.path.join(folder, "precice-config.xml"))
+    parts = re.findall(r'<participant\s+name="([^"]+)"', config)
+    provided: dict[str, list[str]] = {}
+    types: dict[str, str] = {}
+    ignored: list[str] = []
+    for d in sorted(os.listdir(folder)):
+        path = os.path.join(folder, d)
+        if not os.path.isdir(path) or d.startswith("."):
+            continue
+        name, kind = None, None
+        if os.path.exists(os.path.join(path, "system", "controlDict")):
+            m = re.search(r'^\s*participant\s+"?([^";\s]+)"?\s*;',
+                          _read(os.path.join(path, "system", "preciceDict")), re.M)
+            name, kind = (m.group(1) if m else None), "openfoam"
+        elif os.path.exists(os.path.join(path, "config.yml")) and glob.glob(os.path.join(path, "*.inp")):
+            m = re.search(r"^participants:\s*\n\s+([A-Za-z0-9_-]+):\s*$",
+                          _read(os.path.join(path, "config.yml")), re.M)
+            name, kind = (m.group(1) if m else None), "calculix"
+        elif os.path.exists(os.path.join(path, "run.sh")):
+            ignored.append(f"{d} (solver not supported)")
+            continue
+        else:
+            continue
+        if not name:
+            ignored.append(f"{d} ({kind} folder without participant name)")
+            continue
+        if name not in parts:
+            ignored.append(f"{d} (participant '{name}' not in precice-config.xml)")
+            continue
+        provided.setdefault(name, []).append(d)
+        types[d] = kind
+    return {"participants": parts, "folders": provided, "solver_of_folder": types,
+            "ignored_folders": ignored,
+            "absolute_paths": bool(re.search(r'(exchange-directory|directory)="/', config))}
+
+
+_LIGGGHTS_RE = re.compile(r"\b(wall/gran|pair_style\s+gran|granular|mesh/surface|"
+                          r"particletemplate|particledistribution|insert/stream|insert/pack)\b")
+_LAMMPS_RUN_RE = re.compile(r"^\s*(run|minimize|rerun)\s", re.M)
+_CPP_MAIN_RE = re.compile(r"\bint\s+main\s*\(")
+
+
+def _lammps_case(folder: str, candidates: list[str]) -> dict[str, Any]:
+    texts = {c: _read(os.path.join(folder, c)) for c in candidates}
+    included = {m for t in texts.values()
+                for m in re.findall(r'^\s*include\s+"?([^"\s]+)"?\s*$', t, re.M)}
+    mains = [c for c, t in texts.items() if _LAMMPS_RUN_RE.search(t) and c not in included]
+    needed = set()
+    for c in mains + sorted(included):
+        t = texts.get(c) or _read(os.path.join(folder, c))
+        needed |= set(re.findall(r'^\s*(?:read_data|include|read_restart)\s+"?([^"\s$]+)"?', t, re.M))
+        needed |= set(re.findall(r'^\s*pair_coeff\s+\S+\s+\S+\s+\S+\s+([^\s$]+\.[A-Za-z0-9.]+)', t, re.M))
+    missing = sorted(n for n in needed if not os.path.exists(os.path.join(folder, n)))
+    defined = {m for t in texts.values() for m in re.findall(r"^\s*variable\s+(\w+)", t, re.M)}
+    used = {m for t in texts.values() for m in re.findall(r"\$\{(\w+)\}|\$(\w)\b|\bv_(\w+)", t)
+            for m in m if m}
+    return {"input_files": candidates, "main_inputs": mains,
+            "missing_files": missing, "undefined_variables": sorted(used - defined)}
+
+
+def _palabos_case(folder: str) -> dict[str, Any] | None:
+    cases = []
+    for path in sorted(glob.glob(os.path.join(folder, "*.cpp")) + glob.glob(os.path.join(folder, "*", "*.cpp"))):
+        rel = os.path.relpath(path, folder)
+        if rel.startswith("build" + os.sep) or (os.sep + "build" + os.sep) in rel:
+            continue
+        text = _read(path)
+        if _CPP_MAIN_RE.search(text):
+            d = os.path.dirname(path)
+            cases.append({"main": rel, "reads_argument": bool(re.search(r"argv\(1\)|argv\[1\]", text)),
+                          "xml_files": sorted(os.path.basename(x) for x in glob.glob(os.path.join(d, "*.xml"))),
+                          "palabos": "palabos" in text.lower() or "plb::" in text})
+    if not cases or not any(c["palabos"] for c in cases):
+        return None
+    return {"cases": cases}
+
+
+def _tflows_cases(folder: str) -> list[dict[str, Any]]:
+    dirs = ["."] if os.path.exists(os.path.join(folder, "control")) else sorted(
+        d for d in os.listdir(folder) if os.path.exists(os.path.join(folder, d, "control")))
+    cases = []
+    for d in dirs:
+        p = os.path.join(folder, d)
+        ctl = _read(os.path.join(p, "control"))
+        m = re.search(r"^\s*PROBLEM_NAME\s+(\S+)", ctl, re.M | re.I)
+        name = m.group(1) if m else None
+        g = lambda pat: bool(glob.glob(os.path.join(p, pat)))  # noqa: E731
+        cases.append({"folder": d, "problem_name": name,
+                      "grid_ready": bool(name) and g(f"{name}.cfn") and g(f"{name}.dim"),
+                      "generate_scripts": g("generate*.scr"), "convert_scripts": g("convert*.scr"),
+                      "grid_archives": g("*.gz") or g("*.tgz"),
+                      "user_mod": os.path.isdir(os.path.join(p, "User_Mod")),
+                      "backup_interval": bool(re.search(r"^\s*BACKUP_SAVE_INTERVAL", ctl, re.M | re.I))})
+    return cases
+
+
 def _saturne_case(folder: str) -> str | None:
     """code_saturne case = folder with DATA and SRC, at the root or one level down."""
     if os.path.isdir(os.path.join(folder, "DATA")) and os.path.isdir(os.path.join(folder, "SRC")):
@@ -259,6 +375,47 @@ def inspect_case(folder: str) -> dict[str, Any]:
     def files(pattern: str) -> list[str]:
         return sorted(os.path.basename(x) for x in glob.glob(os.path.join(folder, pattern))
                       if os.path.isfile(x))
+
+    if files("precice-config.xml"):
+        info["family"] = "precice"
+        info["precice"] = _precice_case(folder)
+        return info
+
+    defs = files("*_Def.xml")
+    pregen = [b for b in files("*.bi4") + sorted(os.path.relpath(x, folder) for x in
+              glob.glob(os.path.join(folder, "*", "*.bi4")))
+              if not os.path.basename(b).startswith("Part_")
+              and os.path.exists(os.path.join(folder, b[:-4] + ".xml"))]
+    if defs or pregen:
+        info["family"] = "dualsphysics"
+        info["cases"] = [d[:-len("_Def.xml")] for d in defs] or [b[:-4] for b in pregen]
+        info["mode"] = "GenCase + solver" if defs else "pre-generated"
+        info["user_scripts"] = files("xCase*.sh") + files("*.sh")
+        info["notes"].append("Ask the user for the number of particles (printed by GenCase).")
+        return info
+
+    edps = files("*.edp")
+    if edps:
+        info["family"] = "freefem"
+        texts = {e: _read(os.path.join(folder, e)) for e in edps}
+        included = {os.path.basename(m) for t in texts.values()
+                    for m in re.findall(r"include\s*[\"']([^\"']+)[\"']", t)}
+        info["main_scripts"] = [e for e in edps if e not in included]
+        info["reads_keyboard"] = [e for e, t in texts.items() if re.search(r"\bcin\s*>>", t)]
+        return info
+
+    tflows = _tflows_cases(folder)
+    if tflows:
+        info["family"] = "tflows"
+        info["tflows_cases"] = tflows
+        info["notes"].append("Ask the user for the number of cells.")
+        return info
+
+    palabos = _palabos_case(folder)
+    if palabos:
+        info["family"] = "palabos"
+        info.update(palabos)
+        return info
 
     has_foam_case = os.path.exists(os.path.join(folder, "system", "controlDict"))
     if files("runScript.py") or (files("preProcessing.sh") and has_foam_case):
@@ -358,9 +515,17 @@ def inspect_case(folder: str) -> dict[str, Any]:
         return info
 
     ins = files("in.*")
-    if ins:
-        info["family"] = "liggghts"
-        info["input_files"] = files("in*")
+    lmp = sorted(set(ins + files("*.in") + files("*.lmp") + files("*.lammps")))
+    if lmp:
+        if files("*.stl") or any(_LIGGGHTS_RE.search(_read(os.path.join(folder, f))) for f in ins):
+            info["family"] = "liggghts"
+            info["input_files"] = files("in*")
+            return info
+        info["family"] = "lammps"
+        info.update(_lammps_case(folder, [f for f in lmp if not f.startswith("log.")]))
+        info["notes"].append("Ask the user for the number of atoms. LAMMPS and LIGGGHTS share "
+                             "the in.* naming: if this is a LIGGGHTS (granular) case, use "
+                             "the LIGGGHTS solver.")
         return info
 
     if (glob.glob(os.path.join(folder, "*.rad")) or glob.glob(os.path.join(folder, "*.key"))):
@@ -457,7 +622,8 @@ def _suggest(family: str,
             nodes: int | None = None,
             elements: int | None = None,
             fds: dict | None = None,
-            prefer_speed: bool = False) -> dict[str, Any]:
+            prefer_speed: bool = False,
+            particles: int | None = None) -> dict[str, Any]:
     """Return a vCPU/RAM recommendation with reasoning and warnings."""
     notes: list[str] = []
     warnings: list[str] = []
@@ -649,6 +815,59 @@ def _suggest(family: str,
                 "notes": ["XBeach (MPI) runs one process per physical core: use highcore or "
                           "hypercore."],
                 "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point."]}
+
+    if family == "precice":
+        needed = max(((cells or 0) // 75_000) + 2, 4) if cells else 8
+        notes.append("Physical cores are split among the participants (CalculiX at most 8 "
+                     "threads each, the rest to OpenFOAM): use highcore or hypercore.")
+        if cells:
+            notes.append(f"~75,000 OpenFOAM cells per core plus 2 cores for the structure "
+                         f"-> {needed} cores.")
+        else:
+            warnings.append("OpenFOAM cell count unknown: 8 vCPU as a starting point.")
+        return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": physical_ram(),
+                "ideal_cpu": needed, "notes": notes, "warnings": warnings}
+
+    if family == "lammps":
+        needed = max((particles or 0) // 2_000, 1) if particles else 8
+        notes.append("LAMMPS runs one MPI process per physical core: use highcore or hypercore.")
+        if particles:
+            notes.append(f"~2,000 atoms per core -> {needed} cores for {particles:,} atoms "
+                         "(fewer atoms per core do not speed up the run).")
+        else:
+            warnings.append("Number of atoms unknown: 8 vCPU as a starting point.")
+        return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": physical_ram(),
+                "ideal_cpu": needed, "notes": notes, "warnings": warnings}
+
+    if family in ("palabos", "tflows"):
+        name = "Palabos" if family == "palabos" else "T-Flows"
+        needed = max((cells or 0) // 50_000, 2) if cells else 8
+        notes.append(f"{name} runs one process per physical core: use highcore or hypercore.")
+        if cells:
+            notes.append(f"~50,000 cells (lattice nodes) per core -> {needed} cores.")
+        else:
+            warnings.append("Model size unknown: 8 vCPU as a starting point.")
+        return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": physical_ram(),
+                "ideal_cpu": needed, "notes": notes, "warnings": warnings}
+
+    if family == "freefem":
+        return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": "standard",
+                "notes": ["Sequential .edp scripts use few cores (several scripts run side by "
+                          "side). For MPI scripts (PETSc, hpddm) use 8+ vCPU on highcore or "
+                          "hypercore: one process per physical core."],
+                "warnings": ["Ask the user whether the script uses MPI."]}
+
+    if family == "dualsphysics":
+        gpu = next((r for r in ram_avail if "gpu" in r.lower()), None)
+        if gpu:
+            notes.append(f"DualSPHysics is many times faster on GPU: {gpu}, one case per GPU.")
+            if particles and particles < 100_000:
+                notes.append("Small case: a CPU instance (highcpu) is also fine.")
+            return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": gpu,
+                    "notes": notes, "warnings": warnings}
+        return {"family": family, "cpu": _pick_cpu(16, cpu_options), "ram": "highcpu",
+                "notes": ["No GPU type available: CPU run with OpenMP on all vCPU."],
+                "warnings": warnings}
 
     if family == "custom":
         return {"family": family, "cpu": _pick_cpu(2, cpu_options), "ram": "standard",

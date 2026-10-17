@@ -434,7 +434,8 @@ async def list_machine_options(ctx: Context = None) -> dict:
         },
         "physical_cores": "physical cores = vCPU on highcore/hypercore, vCPU / 2 on highcpu, "
                           "standard, highmem, hypercpu. MPI-only solvers (OpenFOAM, DAFoam, "
-                          "SU2, code_saturne, XBeach, TELEMAC, LIGGGHTS) run one process per "
+                          "SU2, code_saturne, XBeach, TELEMAC, LIGGGHTS, LAMMPS, Palabos, "
+                          "T-Flows, preCICE) run one process per "
                           "physical core.",
     }
 
@@ -447,7 +448,8 @@ async def solver_guide(solver: str) -> dict:
     solver: script name (e.g. "EnergyPlus-9.6.0", "DAFoam-v5.0.0") or family
     ("fds", "openfoam", "dafoam", "calculix", "code_aster", "codesaturne", "su2",
     "openradioss", "contam", "energyplus", "liggghts", "openlb", "telemac", "swan",
-    "xbeach", "custom"). Makes no API calls. Includes restart/relaunch behaviour
+    "xbeach", "custom", "precice", "lammps", "palabos", "freefem", "tflows",
+    "dualsphysics"). Makes no API calls. Includes restart/relaunch behaviour
     (e.g. FDS restart and .stop files) and optional cloudHPC settings.
     Always call it when the user asks how to prepare, structure or run a case for a
     solver: it is the authoritative description of how cloudHPC runs that solver.
@@ -469,6 +471,7 @@ async def suggest_resources(
     fds_meshes: int | None = None,
     fds_mpi_groups: int | None = None,
     fds_total_cells: int | None = None,
+    particles: int | None = None,
     case_folder: str | None = None,
     prefer_speed: bool = False,
     ctx: Context = None,
@@ -479,6 +482,8 @@ async def suggest_resources(
             ("fds", "openfoam", "calculix", "code_aster", "openradioss", "su2").
     cells: CFD cells (OpenFOAM/SU2). nodes: FEA nodes (CalculiX/code_aster).
     elements: OpenRadioss elements.
+    particles: LAMMPS atoms or DualSPHysics particles. For Palabos/T-Flows pass the
+            lattice nodes / cells as cells; for preCICE the OpenFOAM cells.
     fds_*: FDS mesh info if the .fds file cannot be read directly.
     case_folder: (local mode) folder to inspect automatically instead.
     prefer_speed: favour the faster hypercore/hypercpu instances over cost.
@@ -505,7 +510,8 @@ async def suggest_resources(
     except CloudHPCError as e:
         return _catalog_err(e)
     return advisor.suggest(family, cpus, rams, cells=cells, nodes=nodes,
-                           elements=elements, fds=fds_info, prefer_speed=prefer_speed)
+                           elements=elements, fds=fds_info, prefer_speed=prefer_speed,
+                           particles=particles)
 
 
 # -------------------------------------------------------------- storage

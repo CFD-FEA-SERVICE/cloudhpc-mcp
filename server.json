@@ -3,7 +3,7 @@
   "name": "cloud.cloudhpc/mcp",
   "title": "cloudHPC",
   "description": "Run FDS, OpenFOAM, CalculiX and other engineering simulations on cloudHPC from your AI assistant.",
-  "version": "0.7.3",
+  "version": "0.7.1",
   "websiteUrl": "https://cloudhpc.cloud",
   "repository": {
     "url": "https://github.com/CFD-FEA-SERVICE/cloudhpc-mcp",

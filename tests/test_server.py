@@ -10,7 +10,7 @@ import pytest
 
 os.environ["CLOUDHPC_MCP_MODE"] = "local"
 
-from cloudhpc_mcp import advisor, files, server  # noqa: E402
+from cloudhpc_mcp import advisor, files, guides, server  # noqa: E402
 from cloudhpc_mcp.client import CloudHPCClient, CloudHPCError  # noqa: E402
 
 API = "https://api.test/api/v2"
@@ -1205,3 +1205,80 @@ async def test_missing_push_folder_is_not_reported_as_deleted(api):
     assert "push applied" in r["hint"] and "60 days" not in r["hint"]
     r = await server.list_storage("nope")
     assert "60 days" in r["hint"]
+
+
+# ------------------------------------------------ new solvers (oct 2026)
+
+def _issues(d):
+    from cloudhpc_mcp import errors
+    return " | ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(d))))
+
+
+def test_family_of_new_solvers_2026():
+    for script, fam in (("preCICE-v3.3.1", "precice"), ("LAMMPS", "lammps"),
+                        ("palabos-v2.3.0", "palabos"), ("FreeFEM-4.15", "freefem"),
+                        ("T-Flows-v1.1", "tflows"), ("DualSPHysics-v5.4.0", "dualsphysics")):
+        assert advisor.family_of(script) == fam
+        g = guides.guide_for(fam)
+        assert g and g["restart"] and g["logs"]
+
+
+def test_precice_detection_and_preflight(tmp_path):
+    cfg = '<participant name="Fluid">\n<participant name="Solid">\n'
+    d = _case(tmp_path, "pc", {
+        "precice-config.xml": cfg,
+        "fluid-openfoam/system/controlDict": "x", "fluid-openfoam/system/preciceDict": "participant Fluid;",
+        "fluid-openfoam/system/blockMeshDict": "x",
+        "solid-calculix/config.yml": "participants:\n    Solid:\n      interfaces: x\n",
+        "solid-calculix/solid.inp": "*NODE\n*STEP\n",
+        "solid-openfoam/system/controlDict": "x", "solid-openfoam/system/preciceDict": "participant Solid;",
+        "solid-fenics/run.sh": "x"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "precice"
+    assert sorted(info["precice"]["folders"]["Solid"]) == ["solid-calculix", "solid-openfoam"]
+    msg = _issues(d)
+    assert "several folders" in msg and "no mesh" in msg and "solver not supported" in msg
+
+
+def test_lammps_vs_liggghts_and_checks(tmp_path):
+    d = _case(tmp_path, "lmp", {"in.melt": "variable T equal 1.0\nread_data data.melt\n"
+                                            "velocity all create ${T} ${seed}\nrun 100\n",
+                                "in.settings": "pair_style lj/cut 2.5\n"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "lammps" and info["main_inputs"] == ["in.melt"]
+    msg = _issues(d)
+    assert "data.melt" in msg and "seed" in msg and "T," not in msg
+    d = _case(tmp_path, "lig", {"in.hopper": "fix wall all wall/gran model hertz\nrun 10\n"})
+    assert advisor.inspect_case(str(d))["family"] == "liggghts"
+
+
+def test_palabos_freefem_tflows_dualsphysics(tmp_path):
+    d = _case(tmp_path, "plb", {"cavity.cpp": '#include "palabos3D.h"\nint main(int a, char* v[]) '
+                                              '{ global::argv(1); }', "a.xml": "x", "b.xml": "y",
+                                "CMakeLists.txt": "x"})
+    assert advisor.inspect_case(str(d))["family"] == "palabos"
+    assert "several .xml" in _issues(d)
+
+    d = _case(tmp_path, "ff", {"main.edp": 'include "mesh.edp"\nint n; cin >> n;\n', "mesh.edp": "x"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "freefem" and info["main_scripts"] == ["main.edp"]
+    assert "keyboard" in _issues(d)
+
+    d = _case(tmp_path, "tf", {"control": "PROBLEM_NAME chan\n", "User_Mod/x.f90": "x"})
+    assert advisor.inspect_case(str(d))["family"] == "tflows"
+    msg = _issues(d)
+    assert "no grid" in msg and "User_Mod" in msg and "BACKUP_SAVE_INTERVAL" in msg
+
+    d = _case(tmp_path, "dsph", {"Dambreak_Def.xml": "x", "xCase_Dambreak.sh": "x"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "dualsphysics" and info["cases"] == ["Dambreak"]
+    assert "not executed" in _issues(d)
+
+
+def test_suggest_new_solvers_2026():
+    cpus, rams = [2, 4, 8, 16, 32, 64], ["highcpu", "standard", "highcore", "hypercore", "basegpu"]
+    assert advisor.suggest("dualsphysics", cpus, rams)["ram"] == "basegpu"
+    r = advisor.suggest("lammps", cpus, rams, particles=64_000)
+    assert r["cpu"] == 32 and r["ram"] == "highcore"
+    assert advisor.suggest("precice", cpus, rams)["ram"] in ("highcore", "hypercore")
+    assert advisor.suggest("freefem", cpus, rams)["cpu"] == 4

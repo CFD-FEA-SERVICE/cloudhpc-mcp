@@ -9,7 +9,8 @@ conversation.
 
 Supported solvers: everything available on cloudHPC (FDS, OpenFOAM,
 snappyHexMesh, DAFoam, code_aster, CalculiX, OpenRadioss, SU2, openTELEMAC,
-LIGGGHTS, OpenLB, EnergyPlus, CONTAM, ...). Resource advice
+LIGGGHTS, LAMMPS, OpenLB, Palabos, FreeFEM, T-Flows, DualSPHysics, preCICE coupled
+OpenFOAM/CalculiX, EnergyPlus, CONTAM, ...). Resource advice
 follows the [cloudHPC scalability rules](https://docs.cloudhpc.cloud/scalability/)
 and run diagnosis follows the [cloudHPC errors guide](https://docs.cloudhpc.cloud/errors/).
 
