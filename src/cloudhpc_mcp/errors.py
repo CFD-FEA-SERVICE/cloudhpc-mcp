@@ -545,9 +545,10 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         for p in parts:
             got = folders.get(p, [])
             if not got:
-                add("error", f"Participant '{p}' has no OpenFOAM or CalculiX folder (OpenFOAM: "
+                add("error", f"Participant '{p}' has no supported folder (OpenFOAM: "
                              "system/controlDict + system/preciceDict with 'participant "
-                             f"{p};'; CalculiX: config.yml + .inp with *STEP).", "")
+                             f"{p};'; CalculiX: config.yml + .inp with *STEP; code_aster: "
+                             ".export + .comm using precice_aster).", "")
             elif len(got) > 1:
                 add("error", f"Participant '{p}' is provided by several folders ({', '.join(got)}): "
                              "keep only the one to run.", "")
@@ -562,11 +563,21 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                 inps = glob.glob(os.path.join(path, "*.inp"))
                 if not any(re.search(r"^\*STEP", _read_text(i), re.M | re.I) for i in inps):
                     add("error", f"{d}: no .inp file with *STEP.", "")
+        if pc.get("unnamed_code_aster"):
+            add("error", "Cannot tell which participant the code_aster folder(s) "
+                         f"{', '.join(pc['unnamed_code_aster'])} provide: add "
+                         "participant=\"<name>\" to the run_fsi / run_cht call in the .comm.", "")
+        for d, kind in pc.get("solver_of_folder", {}).items():
+            if kind == "codeaster":
+                exports = glob.glob(os.path.join(folder, d, "*.export"))
+                if not any(re.search(r"^F\s+comm\s", _read_text(e), re.M) for e in exports):
+                    add("error", f"{d}: no .export with an 'F comm' line.", "")
         if pc.get("ignored_folders"):
             add("info", "Ignored folders: " + "; ".join(pc["ignored_folders"]), "")
         if pc.get("absolute_paths"):
-            add("warning", "precice-config.xml uses absolute directories: use relative paths "
-                           "as in the tutorials.", "")
+            add("info", "precice-config.xml uses absolute directories: relative paths as in "
+                        "the tutorials are safer (cloudHPC makes them absolute when code_aster "
+                        "takes part).", "")
         if os.path.exists(os.path.join(folder, "run.sh")) or glob.glob(os.path.join(folder, "*", "run.sh")):
             add("info", "run.sh / clean.sh scripts are not executed on cloudHPC: settings made "
                         "only there are not applied.", "")

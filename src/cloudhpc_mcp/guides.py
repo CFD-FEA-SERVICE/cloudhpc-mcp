@@ -440,21 +440,25 @@ GUIDES: dict[str, dict[str, Any]] = {
         "outputs": "POSTPROCESS.tar.gz in the case folder.",
         "docs": DOCS,
     },    "precice": {
-        "name": "preCICE 3.3.1 (coupled simulations with OpenFOAM and CalculiX participants)",
+        "name": "preCICE 3.3.1 (coupled FSI / CHT simulations with OpenFOAM, CalculiX and code_aster participants)",
         "input": [
             "precice-config.xml at the root of the case folder.",
             "One subfolder per participant, as in the preCICE tutorials. OpenFOAM participant: "
             "a folder with system/controlDict and system/preciceDict containing "
             "'participant <name>;'. CalculiX participant: a folder with config.yml (the "
-            "participant name under 'participants:') and an .inp file containing *STEP.",
+            "participant name under 'participants:') and an .inp file containing *STEP. "
+            "code_aster participant (FSI or CHT): a folder with an .export (with an 'F comm' "
+            "line) and a .comm that uses the precice_aster adapter; give the participant name "
+            "with participant=\"<name>\" in the run_fsi / run_cht call of the .comm (it can be "
+            "omitted only when code_aster is the one participant left without a folder).",
             "Each participant of precice-config.xml needs exactly ONE folder. The tutorials "
             "often ship alternatives for the same participant (e.g. solid-calculix and "
             "solid-openfoam): keep only the one to run, otherwise the run stops. Folders whose "
             "participant is not in precice-config.xml are ignored.",
-            "Only OpenFOAM and CalculiX participants are supported; folders that contain only "
-            "a run.sh (other solvers) are ignored.",
-            "Paths in precice-config.xml and in the adapters (e.g. exchange-directory) must be "
-            "relative, as in the tutorials.",
+            "Supported participants: OpenFOAM, CalculiX and code_aster; folders that contain "
+            "only a run.sh (other solvers) are ignored.",
+            "Paths in precice-config.xml and in the adapters (e.g. exchange-directory) should "
+            "be relative, as in the tutorials.",
         ],
         "automatic": [
             "The tutorials' run.sh / clean.sh scripts are NOT executed: each participant's "
@@ -470,16 +474,21 @@ GUIDES: dict[str, dict[str, Any]] = {
             "parallel and reconstructed at the end.",
             "CalculiX participants: the first .inp file containing *STEP is run with the "
             "participant name.",
+            "code_aster participants: the .export with the 'F comm' line is run with one MPI "
+            "process (the adapter is serial) and its thread count (P ncpus) is set "
+            "automatically; P mpi_nbcpu is set to 1. code_aster runs in a temporary folder, "
+            "so when it takes part the exchange-directory in precice-config.xml is made "
+            "absolute automatically (the file in the case folder is updated).",
             "Exchange folders (precice-run) left by a previous run are removed before start.",
         ],
-        "parallel": "The physical cores are split among the participants: each CalculiX "
-                    "participant gets an equal share, at most 8 threads when OpenFOAM "
-                    "participants are present (CalculiX scales little beyond); the remaining "
+        "parallel": "The physical cores are split among the participants: each CalculiX or "
+                    "code_aster participant gets an equal share as threads, at most 8 when "
+                    "OpenFOAM participants are present (they scale little beyond); the remaining "
                     "cores are split equally among the OpenFOAM participants (one MPI process "
                     "per core). The split is printed at the start of the log.",
         "resources": "Use highcore or hypercore (physical cores). Tutorials run fine on 4-8 "
                      "vCPU; size larger cases on the OpenFOAM mesh (~50,000-100,000 cells per "
-                     "core) plus up to 8 cores per CalculiX participant.",
+                     "core) plus up to 8 cores per CalculiX or code_aster participant.",
         "restart": [
             "Coupled runs cannot be resumed (preCICE writes no checkpoint): relaunching an "
             "incomplete run starts it from the beginning. A completed run is not run again "

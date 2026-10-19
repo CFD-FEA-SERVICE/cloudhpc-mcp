@@ -40,7 +40,7 @@ FAMILIES = {
     "swan": "SWAN",
     "xbeach": "XBeach",
     "custom": "Custom scripts (bash / Python)",
-    "precice": "preCICE (coupled OpenFOAM / CalculiX)",
+    "precice": "preCICE (coupled OpenFOAM / CalculiX / code_aster)",
     "lammps": "LAMMPS",
     "palabos": "Palabos",
     "freefem": "FreeFEM",
@@ -243,6 +243,7 @@ def _precice_case(folder: str) -> dict[str, Any]:
     provided: dict[str, list[str]] = {}
     types: dict[str, str] = {}
     ignored: list[str] = []
+    aster_pending: list[str] = []
     for d in sorted(os.listdir(folder)):
         path = os.path.join(folder, d)
         if not os.path.isdir(path) or d.startswith("."):
@@ -256,6 +257,17 @@ def _precice_case(folder: str) -> dict[str, Any]:
             m = re.search(r"^participants:\s*\n\s+([A-Za-z0-9_-]+):\s*$",
                           _read(os.path.join(path, "config.yml")), re.M)
             name, kind = (m.group(1) if m else None), "calculix"
+        elif glob.glob(os.path.join(path, "*.export")) and glob.glob(os.path.join(path, "*.comm")):
+            comm = "".join(_read(c) for c in glob.glob(os.path.join(path, "*.comm")))
+            if "precice_aster" not in comm:
+                ignored.append(f"{d} (code_aster folder whose .comm does not use precice_aster)")
+                continue
+            m = re.search(r"participant\s*=\s*[\"']([^\"']+)[\"']", comm)
+            name, kind = (m.group(1) if m else "?"), "codeaster"
+            if name == "?":
+                aster_pending.append(d)
+                types[d] = kind
+                continue
         elif os.path.exists(os.path.join(path, "run.sh")):
             ignored.append(f"{d} (solver not supported)")
             continue
@@ -269,7 +281,14 @@ def _precice_case(folder: str) -> dict[str, Any]:
             continue
         provided.setdefault(name, []).append(d)
         types[d] = kind
+    unnamed_aster = []
+    free = [p for p in parts if p not in provided]
+    if len(aster_pending) == 1 and len(free) == 1:
+        provided[free[0]] = aster_pending
+    else:
+        unnamed_aster = aster_pending
     return {"participants": parts, "folders": provided, "solver_of_folder": types,
+            "unnamed_code_aster": unnamed_aster,
             "ignored_folders": ignored,
             "absolute_paths": bool(re.search(r'(exchange-directory|directory)="/', config))}
 
@@ -818,7 +837,7 @@ def _suggest(family: str,
 
     if family == "precice":
         needed = max(((cells or 0) // 75_000) + 2, 4) if cells else 8
-        notes.append("Physical cores are split among the participants (CalculiX at most 8 "
+        notes.append("Physical cores are split among the participants (CalculiX or code_aster at most 8 "
                      "threads each, the rest to OpenFOAM): use highcore or hypercore.")
         if cells:
             notes.append(f"~75,000 OpenFOAM cells per core plus 2 cores for the structure "

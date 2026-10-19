@@ -1282,3 +1282,23 @@ def test_suggest_new_solvers_2026():
     assert r["cpu"] == 32 and r["ram"] == "highcore"
     assert advisor.suggest("precice", cpus, rams)["ram"] in ("highcore", "hypercore")
     assert advisor.suggest("freefem", cpus, rams)["cpu"] == 4
+
+
+def test_precice_code_aster_participant(tmp_path):
+    cfg = '<participant name="Fluid">\n<participant name="Solid">\n'
+    d = _case(tmp_path, "pca", {
+        "precice-config.xml": cfg,
+        "fluid-openfoam/system/controlDict": "x", "fluid-openfoam/system/preciceDict": "participant Fluid;",
+        "fluid-openfoam/system/blockMeshDict": "x",
+        "solid-aster/fsi.export": "P ncpus 1\nF comm fsi.comm D 1\n",
+        "solid-aster/fsi.comm": "from precice_aster import run_fsi\nrun_fsi()\n"})
+    info = advisor.inspect_case(str(d))
+    assert info["precice"]["folders"]["Solid"] == ["solid-aster"]
+    assert "Solid" not in _issues(d)
+    # two unnamed code_aster folders: ambiguous
+    (d / "other-aster").mkdir()
+    (d / "other-aster" / "a.export").write_text("F comm a.comm D 1\n")
+    (d / "other-aster" / "a.comm").write_text("import precice_aster\n")
+    assert "Cannot tell which participant" in _issues(d)
+    g = guides.guide_for("precice")
+    assert "code_aster" in g["name"] and any("precice_aster" in x for x in g["input"])
