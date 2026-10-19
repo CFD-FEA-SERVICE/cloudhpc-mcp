@@ -1302,3 +1302,11 @@ def test_precice_code_aster_participant(tmp_path):
     assert "Cannot tell which participant" in _issues(d)
     g = guides.guide_for("precice")
     assert "code_aster" in g["name"] and any("precice_aster" in x for x in g["input"])
+
+
+def test_code_aster_versions_share_guide():
+    for v in ("codeAster-17.0_mpi", "codeAster-17.3.17_mpi"):
+        assert advisor.family_of(v) == "code_aster"
+    g = guides.guide_for("code_aster")
+    assert "17.3.17" in g["name"]
+    assert any("17.3.17" in x for x in guides.guide_for("precice")["input"])

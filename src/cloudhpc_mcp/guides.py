@@ -193,7 +193,7 @@ GUIDES: dict[str, dict[str, Any]] = {
         "docs": f"{DOCS}/scalability/#calculix",
     },
     "code_aster": {
-        "name": "code_aster 17.0 (MPI)",
+        "name": "code_aster 17.0 and 17.3.17 (MPI: codeAster-17.0_mpi, codeAster-17.3.17_mpi; same setup for both)",
         "input": [
             "One .export file, the .comm file(s) and the mesh (.med/.unv), all at the root of "
             "the case folder. Paths written in the .export are reduced to the file name, so "
@@ -450,7 +450,8 @@ GUIDES: dict[str, dict[str, Any]] = {
             "code_aster participant (FSI or CHT): a folder with an .export (with an 'F comm' "
             "line) and a .comm that uses the precice_aster adapter; give the participant name "
             "with participant=\"<name>\" in the run_fsi / run_cht call of the .comm (it can be "
-            "omitted only when code_aster is the one participant left without a folder).",
+            "omitted only when code_aster is the one participant left without a folder). "
+            "Coupled runs always use code_aster 17.3.17: write the .comm for that version.",
             "Each participant of precice-config.xml needs exactly ONE folder. The tutorials "
             "often ship alternatives for the same participant (e.g. solid-calculix and "
             "solid-openfoam): keep only the one to run, otherwise the run stops. Folders whose "

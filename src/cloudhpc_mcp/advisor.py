@@ -754,7 +754,7 @@ def _suggest(family: str,
         else:
             cpu, needed = _pick_cpu(8, cpu_options), 8
             warnings.append("Number of nodes unknown: 8 vCPU (4 ranks x 2 threads) as a start.")
-        notes.append("Use an _mpi version (e.g. codeAster-17.0_mpi) with PETSc or MUMPS and "
+        notes.append("Use an _mpi version (codeAster-17.0_mpi or codeAster-17.3.17_mpi) with PETSc or MUMPS and "
                      "MATR_DISTRIBUEE='OUI'. mpi_nbcpu is used only if the .comm contains "
                      "NB_SOUS_DOMAINE or NIVEAU_PARALLELISME; cloudHPC sets the OpenMP threads "
                      "per process to vCPU / mpi_nbcpu / 2, so select at least 2 x mpi_nbcpu vCPU.")
