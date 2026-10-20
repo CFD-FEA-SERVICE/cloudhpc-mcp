@@ -1328,3 +1328,22 @@ def test_opencourant_ctl_warns_about_next_engine_files():
                              {"crash_0000.rad", "crash_0001.rad", "crash_0002.rad"})
     assert not errs and any("crash_0002.rad" in n for n in notes)
     assert any("OpenCourantSTARTER.log" in x for x in guides.guide_for("openradioss")["logs"])
+
+
+def test_polymesh_missing_but_generated():
+    from cloudhpc_mcp import errors
+    base = "polyMesh folder not found - generating the mesh (blockMesh / snappyHexMesh / cfMesh)\n"
+    d = {x["id"]: x for x in errors.diagnose(base + "Running blockMesh\nRunning simpleFoam\n")}
+    assert d["of_polymesh"]["severity"] == "info" and "generated" in d["of_polymesh"]["cause"]
+    d = {x["id"]: x for x in errors.diagnose(base + "Running snappyHexMesh\nsnappyHexMesh failure\n")}
+    assert d["of_polymesh"]["severity"] == "warning" and "failed" in d["of_polymesh"]["cause"]
+    d = {x["id"]: x for x in errors.diagnose(base + "Running simpleFoam\n")}
+    assert d["of_polymesh"]["severity"] == "warning" and "no mesh" in d["of_polymesh"]["cause"]
+
+
+def test_preflight_polymesh_generated_in_run(tmp_path):
+    d = _case(tmp_path, "of", {"system/controlDict": "x", "system/blockMeshDict": "x"})
+    from cloudhpc_mcp import errors
+    issues = errors.preflight(advisor.inspect_case(str(d)))
+    pm = [i for i in issues if "polyMesh" in i["issue"]]
+    assert pm and pm[0]["severity"] == "info"

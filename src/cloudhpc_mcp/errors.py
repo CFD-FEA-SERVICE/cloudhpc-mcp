@@ -270,6 +270,30 @@ CATALOG: list[dict[str, str]] = [
 _COMPILED = [(e, re.compile(e["pattern"], re.IGNORECASE)) for e in CATALOG]
 
 
+_MESH_RUN_RE = re.compile(r"Running\s+(blockMesh|snappyHexMesh|cfMesh|cartesianMesh|"
+                          r"tetMesh|pMesh)", re.IGNORECASE)
+_MESH_FAIL_RE = re.compile(r"(blockMesh|snappyHexMesh|cfMesh|cartesianMesh)\s+(failure|failed)",
+                           re.IGNORECASE)
+
+
+def _polymesh_entry(text: str, start: int) -> dict[str, Any] | None:
+    """'polyMesh folder not found' is fine when the run then generates the mesh."""
+    after = text[start:]
+    ran = _MESH_RUN_RE.search(after)
+    if not ran:
+        return None  # nothing generated the mesh: keep the catalogue warning
+    if _MESH_FAIL_RE.search(after):
+        return {"severity": "warning",
+                "cause": f"constant/polyMesh missing and the mesh generation in the run "
+                         f"({ran.group(1)}) failed.",
+                "fix": "Read the mesh log (log.blockMesh / log.snappyHexMesh / log.cartesianMesh) "
+                       "in the results; see the mesh error reported below."}
+    return {"severity": "info",
+            "cause": f"No constant/polyMesh uploaded: the mesh was generated in the run "
+                     f"({ran.group(1)}).",
+            "fix": "Nothing to do."}
+
+
 def diagnose(text: str) -> list[dict[str, Any]]:
     """Return catalogue entries found in a simulation output/log."""
     found = []
@@ -277,6 +301,10 @@ def diagnose(text: str) -> list[dict[str, Any]]:
         m = rx.search(text or "")
         if m:
             line = next((ln.strip() for ln in (text or "").splitlines() if rx.search(ln)), m.group(0))
+            if entry["id"] == "of_polymesh":
+                alt = _polymesh_entry(text, m.end())
+                if alt:
+                    entry = {**entry, **alt}
             found.append({
                 "id": entry["id"], "severity": entry["severity"], "matched": line[:200],
                 "cause": entry["cause"], "fix": entry["fix"],
@@ -407,9 +435,17 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
 
     if fam == "openfoam":
         if not os.path.isdir(os.path.join(folder, "constant", "polyMesh")):
-            add("warning", "constant/polyMesh not found: generate the mesh in the run "
-                           "(snappyHexMesh/cfMesh) or pass a mesh folder at launch.",
-                "general_problem_with_openfoam_solver")
+            gens = [g for g, f in (("blockMesh", "blockMeshDict"), ("snappyHexMesh", "snappyHexMeshDict"),
+                                   ("cfMesh", "meshDict"))
+                    if os.path.exists(os.path.join(folder, "system", f))]
+            if gens:
+                add("info", "No constant/polyMesh: the mesh is generated in the run "
+                            f"({', '.join(gens)}).", "")
+            else:
+                add("warning", "constant/polyMesh not found and no blockMeshDict, "
+                               "snappyHexMeshDict or meshDict in system/: upload the mesh or "
+                               "pass a mesh folder at launch.",
+                    "general_problem_with_openfoam_solver")
         dpd = os.path.join(folder, "system", "decomposeParDict")
         if os.path.exists(dpd):
             with open(dpd, "r", errors="replace") as f:
