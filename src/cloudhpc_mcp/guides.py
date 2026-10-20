@@ -294,7 +294,7 @@ GUIDES: dict[str, dict[str, Any]] = {
         "docs": DOCS,
     },
     "openradioss": {
-        "name": "OpenRadioss",
+        "name": "OpenCourant (formerly OpenRadioss): same setup and rules for both names",
         "input": [
             "Radioss format: a starter file *_0000.rad and one or more engine files "
             "*_0001.rad, *_0002.rad ... (the engine files are run one after the other), or",
@@ -310,7 +310,13 @@ GUIDES: dict[str, dict[str, Any]] = {
                     "thread of the core), so hyperthreaded machines are used too.",
         "resources": "About 20,000-30,000 elements per core; hypercore gave the best "
                      "cost/performance in our benchmark.",
-        "logs": ["OpenRadiossSTARTER.log", "OpenRadiossENGINE_<file>.log"],
+        "restart": [
+            "A <root>_<run>.ctl file in the folder (written by a soft stop or by a live "
+            "update) ends the engine sequence: the engine files after it are not run. "
+            "Delete leftover .ctl files before relaunching the case.",
+        ],
+        "logs": ["OpenCourantSTARTER.log and OpenCourantENGINE_<file>.log (OpenCourant)",
+                 "OpenRadiossSTARTER.log and OpenRadiossENGINE_<file>.log (OpenRadioss)"],
         "docs": f"{DOCS}/scalability/#openradioss",
     },
     "contam": {

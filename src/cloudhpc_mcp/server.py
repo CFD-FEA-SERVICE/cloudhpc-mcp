@@ -50,7 +50,7 @@ PUBLIC_RATE_PER_MIN = int(os.environ.get("CLOUDHPC_PUBLIC_RATE_PER_MIN", "60"))
 
 INSTRUCTIONS = """\
 cloudHPC runs engineering simulations (FDS, OpenFOAM, code_aster, CalculiX,
-OpenRadioss, SU2, ...) on cloud machines. Typical workflow:
+OpenRadioss/OpenCourant, SU2, ...) on cloud machines. Typical workflow:
 
 1. Understand the case. In local mode call inspect_case on the user's folder:
    it detects the solver and the model size (FDS meshes, OpenFOAM cells, ...).
@@ -92,7 +92,7 @@ To resume a stopped run use resume_simulation (FDS and OpenFOAM: same solver,
 vCPU, RAM type and folder). For post-processing on a remote desktop use
 start_desktop and always remind the user to stop it: it is billed until stopped.
 To change a RUNNING simulation without stopping it (OpenFOAM controlDict,
-fvSolution, fvSchemes; FDS .stop; code_saturne control_file; OpenRadioss .ctl)
+fvSolution, fvSchemes; FDS .stop; code_saturne control_file; OpenRadioss/OpenCourant .ctl)
 read the current file with live_settings, then use update_running_simulation.
 If a tool is missing, the user may have signed in with read-only access.
 
@@ -455,6 +455,8 @@ async def solver_guide(solver: str) -> dict:
     solver: it is the authoritative description of how cloudHPC runs that solver.
     """
     fam = solver if solver in guides.GUIDES else advisor.family_of(solver)
+    if fam == "other" and solver.lower() == "opencourant":
+        fam = "openradioss"
     g = guides.guide_for(fam)
     if not g:
         return {"error": f"No guide for '{solver}' yet.",
@@ -481,7 +483,7 @@ async def suggest_resources(
     solver: script name (e.g. "fds6.9.1", "openFoam-v2406") or family
             ("fds", "openfoam", "calculix", "code_aster", "openradioss", "su2").
     cells: CFD cells (OpenFOAM/SU2). nodes: FEA nodes (CalculiX/code_aster).
-    elements: OpenRadioss elements.
+    elements: OpenRadioss / OpenCourant elements.
     particles: LAMMPS atoms or DualSPHysics particles. For Palabos/T-Flows pass the
             lattice nodes / cells as cells; for preCICE the OpenFOAM cells.
     fds_*: FDS mesh info if the .fds file cannot be read directly.

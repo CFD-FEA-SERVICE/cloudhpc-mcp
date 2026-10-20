@@ -8,7 +8,7 @@ folder, launch, monitor, diagnose errors and download the results, all from a
 conversation.
 
 Supported solvers: everything available on cloudHPC (FDS, OpenFOAM,
-snappyHexMesh, DAFoam, code_aster, CalculiX, OpenRadioss, SU2, openTELEMAC,
+snappyHexMesh, DAFoam, code_aster, CalculiX, OpenRadioss/OpenCourant, SU2, openTELEMAC,
 LIGGGHTS, LAMMPS, OpenLB, Palabos, FreeFEM, T-Flows, DualSPHysics, preCICE coupled
 OpenFOAM/CalculiX/code_aster, EnergyPlus, CONTAM, ...). Resource advice
 follows the [cloudHPC scalability rules](https://docs.cloudhpc.cloud/scalability/)
@@ -65,7 +65,7 @@ connect with **read-only access** (see [Sign-in with OAuth](#sign-in-with-oauth)
 | `resume_simulation` | Resume a stopped run with the same solver, vCPU, RAM type and folder (FDS and OpenFOAM; **asks for confirmation**) |
 | `start_desktop` | Start a Linux or Windows remote desktop for post-processing; billed until you stop it (**asks for confirmation**) |
 | `live_settings` | What can be changed in a running simulation, the current content of those files and the state of previous live updates |
-| `update_running_simulation` | Change a running simulation without stopping it: OpenFOAM `system/controlDict`, `fvSolution`, `fvSchemes`; FDS `<CHID>.stop`; code_saturne `RESU/<run>/control_file`; OpenRadioss `<root>_0001.ctl`. The files go to the `_push` folder of the case and a sync is requested automatically, so the machine applies them within a few minutes (**asks for confirmation**) |
+| `update_running_simulation` | Change a running simulation without stopping it: OpenFOAM `system/controlDict`, `fvSolution`, `fvSchemes`; FDS `<CHID>.stop`; code_saturne `RESU/<run>/control_file`; OpenRadioss/OpenCourant `<root>_0001.ctl`. The files go to the `_push` folder of the case and a sync is requested automatically, so the machine applies them within a few minutes (**asks for confirmation**) |
 | `open_remote_desktop` | Browser remote-desktop link of a running job |
 | `list_storage`, `list_results` | Browse your storage and result archives |
 | `download_results` ¹ | Download result archives and extract them locally |

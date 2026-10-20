@@ -50,9 +50,11 @@ RULES: dict[str, dict[str, Any]] = {
     "openradioss": {
         "allowed": r"^[^/]+_[0-9]{4}\.ctl$",
         "files": ["<root>_0001.ctl"],
-        "what": "The OpenRadioss Engine reads <root>_<run>.ctl: one command per line, e.g. "
+        "what": "The OpenRadioss / OpenCourant Engine reads <root>_<run>.ctl: one command per line, e.g. "
                 "/STOP (stop writing restart), /CHKPT (restart now), /ANIM or /H3D (output "
-                "now), /KILL (stop without restart).",
+                "now), /KILL (stop without restart). When the case has several engine files "
+                "(_0001, _0002, ...), a .ctl ends the sequence: the following engine files "
+                "are not run.",
         "applied_when": "at the next cycle after the copy",
     },
 }
@@ -149,6 +151,13 @@ def check(family: str, path: str, text: str, current: str | None,
                         f"(e.g. /STOP, /CHKPT, /ANIM); got '{bad[0].strip()}'.")
         if re.search(r"^\s*/KILL", text, re.M):
             notes.append("/KILL stops the run without writing a restart file.")
+        stem = name[:-len(".ctl")]
+        later = sorted(f for f in folder_files if re.fullmatch(r".+_[0-9]{4}\.rad", f)
+                       and not f.endswith("_0000.rad") and f > f"{stem}.rad"
+                       and f.rsplit("_", 1)[0] == stem.rsplit("_", 1)[0])
+        if later:
+            notes.append(f"After {stem}.rad ends, the next engine files ({', '.join(later)}) "
+                         "will NOT run because a .ctl file is present.")
     elif family == "codesaturne":
         if not text.strip():
             errs.append("control_file is empty.")

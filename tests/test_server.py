@@ -1310,3 +1310,21 @@ def test_code_aster_versions_share_guide():
     g = guides.guide_for("code_aster")
     assert "17.3.17" in g["name"]
     assert any("17.3.17" in x for x in guides.guide_for("precice")["input"])
+
+
+async def test_opencourant_same_as_openradioss():
+    for s in ("OpenRadioss", "openradioss-2025", "OpenCourant", "OpenCourant-20261011"):
+        assert advisor.family_of(s) == "openradioss"
+    g = await server.solver_guide("OpenCourant")
+    assert g["family"] == "openradioss" and "OpenCourant" in g["name"]
+    cpus, rams = [8, 16, 32], ["highcore", "hypercore"]
+    assert advisor.suggest(advisor.family_of("OpenCourant"), cpus, rams, elements=400_000) == \
+        advisor.suggest("openradioss", cpus, rams, elements=400_000)
+
+
+def test_opencourant_ctl_warns_about_next_engine_files():
+    from cloudhpc_mcp import live
+    errs, notes = live.check("openradioss", "crash_0001.ctl", "/ANIM\n", None,
+                             {"crash_0000.rad", "crash_0001.rad", "crash_0002.rad"})
+    assert not errs and any("crash_0002.rad" in n for n in notes)
+    assert any("OpenCourantSTARTER.log" in x for x in guides.guide_for("openradioss")["logs"])

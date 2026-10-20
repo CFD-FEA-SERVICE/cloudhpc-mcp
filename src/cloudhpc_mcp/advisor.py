@@ -28,7 +28,7 @@ FAMILIES = {
     "openfoam": "OpenFOAM (incl. snappyHexMesh, cfMesh, foam-extend)",
     "calculix": "CalculiX",
     "code_aster": "code_aster",
-    "openradioss": "OpenRadioss",
+    "openradioss": "OpenRadioss / OpenCourant",
     "su2": "SU2",
     "dafoam": "DAFoam",
     "contam": "CONTAM",
@@ -84,7 +84,7 @@ def family_of(script: str) -> str:
         return "calculix"
     if s.startswith("codeaster") or s.startswith("code_aster"):
         return "code_aster"
-    if "radioss" in s:
+    if "radioss" in s or "courant" in s:   # OpenRadioss is now OpenCourant: same rules
         return "openradioss"
     if "su2" in s:
         return "su2"
