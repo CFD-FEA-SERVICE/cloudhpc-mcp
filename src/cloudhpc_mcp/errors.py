@@ -15,6 +15,26 @@ DOCS = "https://docs.cloudhpc.cloud/errors/"
 
 # id, severity, regex (case-insensitive), cause, fix, docs anchor
 CATALOG: list[dict[str, str]] = [
+    {"id": "kratos_app", "severity": "error",
+     "pattern": r"needs the Kratos application '",
+     "cause": "The case uses a Kratos application that is not installed on cloudHPC.",
+     "fix": "Use one of the installed applications listed in the message, or ask cloudHPC "
+            "support to add it.", "anchor": ""},
+    {"id": "kratos_stage", "severity": "error",
+     "pattern": r"analysis type cannot be determined",
+     "cause": "Kratos cannot tell which analysis to run (MainKratos.py is not executed).",
+     "fix": "Add \"analysis_stage\" to ProjectParameters.json, e.g. "
+            "KratosMultiphysics.StructuralMechanicsApplication.structural_mechanics_analysis.",
+     "anchor": ""},
+    {"id": "kratos_inputs", "severity": "error",
+     "pattern": r"input files referenced by the parameters file are missing",
+     "cause": "The .mdpa mesh or materials file named in the parameters is not in the case folder.",
+     "fix": "Upload the missing files or fix input_filename / materials_filename.", "anchor": ""},
+    {"id": "kratos_mpi", "severity": "info",
+     "pattern": r"no TrilinosApplication: running in OpenMP",
+     "cause": "parallel_type MPI was run in OpenMP (Trilinos is not available).",
+     "fix": "Nothing to do; if the linear solver fails, use amgcl or skyline_lu_factorization.",
+     "anchor": ""},
     # ---------------------------------------------------------------- RAM
     {"id": "ram_high", "severity": "warning",
      "pattern": r"RAM used > \d+(\.\d+)?%",
@@ -641,6 +661,12 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         if os.path.exists(os.path.join(folder, "CMakeLists.txt")) or os.path.exists(os.path.join(folder, "Makefile")):
             add("info", "CMakeLists.txt / Makefile are not used: cloudHPC compiles each .cpp with "
                         "main() against Palabos 2.3.0.", "")
+
+    if fam == "kratos":
+        for c in info.get("kratos_cases", []):
+            where = "" if c["folder"] == "." else f"{c['folder']}: "
+            for sev, msg in c["issues"]:
+                add(sev, where + msg, "")
 
     if fam == "freefem":
         if not info.get("main_scripts"):

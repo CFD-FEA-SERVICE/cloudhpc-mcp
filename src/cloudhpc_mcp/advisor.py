@@ -40,6 +40,7 @@ FAMILIES = {
     "swan": "SWAN",
     "xbeach": "XBeach",
     "custom": "Custom scripts (bash / Python)",
+    "kratos": "Kratos Multiphysics",
     "precice": "preCICE (coupled OpenFOAM / CalculiX / code_aster)",
     "lammps": "LAMMPS",
     "palabos": "Palabos",
@@ -73,7 +74,7 @@ def family_of(script: str) -> str:
                         ("cloudhpc-postprocess", "postprocess"), ("precice", "precice"),
                         ("lammps", "lammps"), ("palabos", "palabos"), ("freefem", "freefem"),
                         ("t-flows", "tflows"), ("tflows", "tflows"),
-                        ("dualsphysics", "dualsphysics")):
+                        ("dualsphysics", "dualsphysics"), ("kratos", "kratos")):
         if s.startswith(prefix):
             return fam
     if s.startswith("fds"):
@@ -299,6 +300,116 @@ _LAMMPS_RUN_RE = re.compile(r"^\s*(run|minimize|rerun)\s", re.M)
 _CPP_MAIN_RE = re.compile(r"\bint\s+main\s*\(")
 
 
+_TRILINOS_SOLVERS = {"amesos", "amesos2", "aztec", "multi_level", "klu", "super_lu_dist",
+                     "mumps", "trilinos_amgcl"}
+
+
+def _kratos_cases(folder: str) -> list[dict[str, Any]]:
+    import ast
+    import json
+
+    def is_case(p):
+        return os.path.exists(os.path.join(p, "MainKratos.py")) or glob.glob(os.path.join(p, "ProjectParameters*.json"))
+
+    dirs = ["."] if is_case(folder) else sorted(
+        d for d in os.listdir(folder) if not d.startswith(".") and os.path.isdir(os.path.join(folder, d))
+        and is_case(os.path.join(folder, d)))
+    cases = []
+    for d in dirs:
+        p = os.path.join(folder, d)
+        c: dict[str, Any] = {"folder": d, "issues": []}
+        jsons_in_main, classes = [], []
+        main = os.path.join(p, "MainKratos.py")
+        if os.path.exists(main):
+            try:
+                tree = ast.parse(_read(main))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                            and node.value.endswith(".json") and os.path.isfile(os.path.join(p, node.value)):
+                        jsons_in_main.append(node.value)
+                    elif isinstance(node, ast.ClassDef):
+                        classes.append(node.name)
+            except SyntaxError:
+                c["issues"].append(("warning", "MainKratos.py cannot be parsed: it is ignored."))
+        jsons_in_main = sorted(set(jsons_in_main))
+        pps = sorted(os.path.basename(x) for x in glob.glob(os.path.join(p, "ProjectParameters*.json")))
+        if len(jsons_in_main) > 1:
+            only_pp = [j for j in jsons_in_main if os.path.basename(j).startswith("ProjectParameters")]
+            jsons_in_main = only_pp if len(only_pp) == 1 else jsons_in_main
+        if len(jsons_in_main) == 1:
+            pfile = jsons_in_main[0]
+        elif len(jsons_in_main) > 1:
+            pfile = None
+            c["issues"].append(("error", f"MainKratos.py refers to several parameter files "
+                                         f"({', '.join(jsons_in_main)}): keep only one."))
+        elif "ProjectParameters.json" in pps:
+            pfile = "ProjectParameters.json"
+        elif len(pps) == 1:
+            pfile = pps[0]
+        else:
+            pfile = None
+            c["issues"].append(("error", "Several parameter files (" + ", ".join(pps) + "): rename the "
+                                "main one ProjectParameters.json." if pps else
+                                "No ProjectParameters.json in the case folder."))
+        c["parameters_file"] = pfile
+        if classes:
+            c["issues"].append(("warning", f"MainKratos.py defines custom classes ({', '.join(classes)}): "
+                                           "custom Python code is not executed on cloudHPC."))
+        params = None
+        if pfile:
+            try:
+                params = json.loads(_read(os.path.join(p, pfile)))
+            except ValueError as e:
+                c["issues"].append(("error", f"{pfile} is not valid JSON: {e}"))
+        if isinstance(params, dict):
+            missing, trilinos, mpi = [], set(), False
+            stack = [(params, "")]
+            while stack:
+                obj, path = stack.pop()
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if k == "input_filename" and isinstance(v, str) and v:
+                            itype = obj.get("input_type", "mdpa")
+                            f = v + ".mdpa" if itype == "mdpa" and not v.endswith(".mdpa") else v
+                            if itype in ("mdpa", "med") and not os.path.isfile(os.path.join(p, f)):
+                                missing.append(f)
+                        elif k == "materials_filename" and isinstance(v, str) and v \
+                                and not os.path.isfile(os.path.join(p, v)):
+                            missing.append(v)
+                        elif k == "parallel_type" and v == "MPI":
+                            mpi = True
+                        elif k == "solver_type" and isinstance(v, str) and v.lower() in _TRILINOS_SOLVERS:
+                            trilinos.add(v)
+                        elif k == "executable_name":
+                            c["issues"].append(("error", f"'{path}/{k}' starts an external program: "
+                                                         "not allowed on cloudHPC."))
+                        elif k == "load_from_checkpoint" and v is not None:
+                            c["issues"].append(("error", "load_from_checkpoint must be null: multistage "
+                                                         "checkpoints cannot be loaded on cloudHPC."))
+                        elif k == "analysis_stage" and isinstance(v, str) and not (
+                                v.startswith("KratosMultiphysics.") or v.startswith("Stages.KratosMultiphysics.")):
+                            c["issues"].append(("error", f"analysis_stage '{v}' is not a Kratos stage: "
+                                                         "custom Python stages are not executed."))
+                        stack.append((v, f"{path}/{k}"))
+                elif isinstance(obj, list):
+                    stack.extend((x, path) for x in obj)
+            if missing:
+                c["issues"].append(("error", "Files referenced in the parameters are missing: "
+                                             + ", ".join(sorted(set(missing))[:8])))
+            if mpi:
+                c["issues"].append(("info", "parallel_type MPI runs in OpenMP on cloudHPC (no Trilinos)."))
+            if trilinos:
+                c["issues"].append(("error", f"Linear solver {', '.join(sorted(trilinos))} needs Trilinos, "
+                                             "which is not available: use amgcl or skyline_lu_factorization."))
+            if "analysis_stage" not in params and not ("orchestrator" in params and "stages" in params) \
+                    and not os.path.exists(main):
+                c["issues"].append(("error", "The analysis type cannot be determined: add "
+                                             "\"analysis_stage\" to the parameters file or include "
+                                             "MainKratos.py."))
+        cases.append(c)
+    return cases
+
+
 def _lammps_case(folder: str, candidates: list[str]) -> dict[str, Any]:
     texts = {c: _read(os.path.join(folder, c)) for c in candidates}
     included = {m for t in texts.values()
@@ -394,6 +505,12 @@ def inspect_case(folder: str) -> dict[str, Any]:
     def files(pattern: str) -> list[str]:
         return sorted(os.path.basename(x) for x in glob.glob(os.path.join(folder, pattern))
                       if os.path.isfile(x))
+
+    if files("MainKratos.py") or files("ProjectParameters*.json") or any(
+            glob.glob(os.path.join(folder, "*", p)) for p in ("MainKratos.py", "ProjectParameters*.json")):
+        info["family"] = "kratos"
+        info["kratos_cases"] = _kratos_cases(folder)
+        return info
 
     if files("precice-config.xml"):
         info["family"] = "precice"
@@ -868,6 +985,14 @@ def _suggest(family: str,
             warnings.append("Model size unknown: 8 vCPU as a starting point.")
         return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": physical_ram(),
                 "ideal_cpu": needed, "notes": notes, "warnings": warnings}
+
+    if family == "kratos":
+        return {"family": family, "cpu": _pick_cpu(16 if prefer_speed else 8, cpu_options),
+                "ram": physical_ram(),
+                "notes": ["Kratos runs in OpenMP with one thread per physical core: use "
+                          "highcore or hypercore. Scaling flattens beyond 16-32 threads."],
+                "warnings": ["No validated size rule yet: 8 vCPU as a starting point; move to "
+                             "more RAM only after a memory error."]}
 
     if family == "freefem":
         return {"family": family, "cpu": _pick_cpu(4, cpu_options), "ram": "standard",

@@ -449,7 +449,7 @@ async def solver_guide(solver: str) -> dict:
     ("fds", "openfoam", "dafoam", "calculix", "code_aster", "codesaturne", "su2",
     "openradioss", "contam", "energyplus", "liggghts", "openlb", "telemac", "swan",
     "xbeach", "custom", "precice", "lammps", "palabos", "freefem", "tflows",
-    "dualsphysics"). Makes no API calls. Includes restart/relaunch behaviour
+    "dualsphysics", "kratos"). Makes no API calls. Includes restart/relaunch behaviour
     (e.g. FDS restart and .stop files) and optional cloudHPC settings.
     Always call it when the user asks how to prepare, structure or run a case for a
     solver: it is the authoritative description of how cloudHPC runs that solver.

@@ -445,7 +445,53 @@ GUIDES: dict[str, dict[str, Any]] = {
         "logs": [],
         "outputs": "POSTPROCESS.tar.gz in the case folder.",
         "docs": DOCS,
-    },    "precice": {
+    },    "kratos": {
+        "name": "Kratos Multiphysics 10.4.2 (structural, fluid, FSI, DEM, MPM, convection-diffusion, co-simulation)",
+        "input": [
+            "A ProjectParameters.json with the files it references (.mdpa mesh, materials "
+            ".json, ...). The case is the folder itself, or each direct subfolder that "
+            "contains a MainKratos.py or a ProjectParameters*.json (run one after the other).",
+            "Parameters file: the one named in MainKratos.py, otherwise ProjectParameters.json, "
+            "otherwise the only ProjectParameters*.json. With several candidates the run stops: "
+            "keep one or rename the main one ProjectParameters.json.",
+            "MainKratos.py is NOT executed: it is only read to find the analysis it uses and the "
+            "parameters file. Custom Python classes or stages defined in it are ignored and the "
+            "standard Kratos analysis runs with the parameters file.",
+            "To choose the analysis explicitly add \"analysis_stage\" to the parameters file, e.g. "
+            "\"analysis_stage\": \"KratosMultiphysics.StructuralMechanicsApplication."
+            "structural_mechanics_analysis\". Multistage projects (\"orchestrator\" + "
+            "\"stages\") are supported.",
+            "Installed applications: StructuralMechanics, ConstitutiveLaws, "
+            "ContactStructuralMechanics, FluidDynamics, MeshMoving, Mapping, FSI, DEM, MPM, "
+            "ConvectionDiffusion, CoSimulation, LinearSolvers, Metis. A case that needs another "
+            "application stops with a clear message: ask cloudHPC support.",
+            "Not allowed: CoSimulation solvers that start external programs "
+            "(executable_name), loading multistage checkpoints (load_from_checkpoint must be "
+            "null) and non-arithmetic expressions in the parameters (only numbers, names and "
+            "math functions).",
+        ],
+        "automatic": [
+            "Missing .mdpa or materials files referenced in the parameters stop the run before "
+            "Kratos starts, with the list of missing files.",
+            "\"parallel_type\": \"MPI\" is run in OpenMP on all cores (Trilinos is not "
+            "available); the file is not modified. Trilinos-only linear solvers (amesos, "
+            "aztec, multi_level) must be replaced with OpenMP ones such as amgcl or "
+            "skyline_lu_factorization.",
+        ],
+        "parallel": "OpenMP: one thread per physical core (vCPU on highcore/hypercore, vCPU/2 "
+                    "on the hyperthreaded types). No MPI and no GPU.",
+        "resources": "highcore or hypercore. OpenMP scaling flattens beyond 16-32 threads: "
+                     "8-16 vCPU suit most cases; move to standard/highmem RAM only for large "
+                     "meshes or memory errors.",
+        "restart": [
+            "Kratos restart files are not used: an interrupted case starts again from the "
+            "beginning, while cases already completed are skipped when the folder is "
+            "relaunched. Use a regular (non-preemptible) instance for long runs.",
+        ],
+        "logs": ["log.kratos in each case folder"],
+        "docs": "https://kratosmultiphysics.github.io/Kratos/",
+    },
+    "precice": {
         "name": "preCICE 3.3.1 (coupled FSI / CHT simulations with OpenFOAM, CalculiX and code_aster participants)",
         "input": [
             "precice-config.xml at the root of the case folder.",
@@ -687,6 +733,7 @@ EXTRA_FAMILIES = {
     "t-flows": "tflows",
     "tflows": "tflows",
     "dualsphysics": "dualsphysics",
+    "kratos": "kratos",
 }
 
 

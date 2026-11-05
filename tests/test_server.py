@@ -1347,3 +1347,25 @@ def test_preflight_polymesh_generated_in_run(tmp_path):
     issues = errors.preflight(advisor.inspect_case(str(d)))
     pm = [i for i in issues if "polyMesh" in i["issue"]]
     assert pm and pm[0]["severity"] == "info"
+
+
+def test_kratos_family_guide_and_preflight(tmp_path):
+    import json as _j
+    from cloudhpc_mcp import errors
+    assert advisor.family_of("KratosMultiphysics-10.4.2") == "kratos"
+    g = guides.guide_for("kratos")
+    assert g and "MainKratos.py is NOT executed" in " ".join(g["input"])
+    pp = {"problem_data": {"parallel_type": "MPI"},
+          "solver_settings": {"model_import_settings": {"input_type": "mdpa", "input_filename": "beam"},
+                              "material_import_settings": {"materials_filename": "StructuralMaterials.json"},
+                              "linear_solver_settings": {"solver_type": "amesos"}}}
+    d = _case(tmp_path, "kr", {"ProjectParameters.json": _j.dumps(pp), "StructuralMaterials.json": "{}",
+                               "MainKratos.py": "import KratosMultiphysics\nclass MyStage: pass\n"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "kratos"
+    msgs = " | ".join(i["issue"] for i in errors.preflight(info))
+    assert "beam.mdpa" in msgs and "amesos" in msgs and "custom classes" in msgs and "OpenMP" in msgs
+    diag = {x["id"] for x in errors.diagnose("@@@ ERROR: the case needs the Kratos application 'Foo'")}
+    assert "kratos_app" in diag
+    r = advisor.suggest("kratos", [4, 8, 16], ["highcpu", "highcore", "hypercore"])
+    assert r["cpu"] == 8 and r["ram"] == "highcore"
