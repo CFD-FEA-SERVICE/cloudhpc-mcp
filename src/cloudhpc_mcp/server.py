@@ -588,29 +588,52 @@ async def get_upload_link(storage_folder: str, filename: str, ctx: Context = Non
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
-async def delete_storage(path: str, confirm: bool = False, ctx: Context = None) -> dict:
-    """Delete a file or folder from storage. Irreversible.
+async def delete_storage(path: str | None = None, paths: list[str] | None = None,
+                         confirm: bool = False, ctx: Context = None) -> dict:
+    """Delete one or more files or folders from storage. Irreversible.
+
+    path: one item; paths: several items (up to 50), deleted together in a single
+    request. Use paths when the user wants to delete several folders at once.
+    Deleting a folder deletes everything inside it: give the folder, never list
+    its files one by one.
+    Asynchronous: the items may stay visible for a few minutes after the call.
 
     If the client supports it, the user confirms in a dialog shown by the server.
     Otherwise: call first with confirm=false, show the summary to the user and
     call again with confirm=true only after the user agrees in a new message,
     even if the original request was explicit.
     """
+    targets = [p.strip().strip("/") for p in ([path] if path else []) + list(paths or [])]
+    targets = list(dict.fromkeys(t for t in targets if t))
+    if not targets:
+        return {"error": "Give path or paths to delete."}
+    if len(targets) > 50:
+        return {"error": "At most 50 items per deletion."}
     c = client_for(ctx)
-    try:
-        info = await c.view_by_path(path)
-    except CloudHPCError as e:
-        return _err(e)
-    summary = (f"Delete {info.get('type', 'item')} '{path}' from cloudHPC storage. "
+    found, missing = [], []
+    for t in targets:
+        try:
+            found.append((t, await c.view_by_path(t)))
+        except CloudHPCError as e:
+            missing.append({"path": t, "error": str(e)})
+    if missing:
+        return {"error": "Nothing was deleted: some items were not found.", "not_found": missing,
+                "found": [t for t, _ in found]}
+    items = [f"folder '{t}' and everything inside it" if i.get("type") == "dir"
+             else f"{i.get('type', 'item')} '{t}'" for t, i in found]
+    summary = (f"Delete {len(items)} item(s) from cloudHPC storage: {', '.join(items)}. "
                "This cannot be undone.")
     stop = await _confirmed(ctx, summary, confirm)
     if stop:
         return stop
     try:
-        await c.delete_path(path)
+        await c.delete_ids([i["id"] for _, i in found])
     except CloudHPCError as e:
         return _err(e)
-    return {"deleted": path}
+    return {"deleted": [t for t, _ in found] if len(found) > 1 else found[0][0],
+            "note": "Deletion is asynchronous: the items can still appear in the storage for a "
+                    "few minutes. Do not delete again. Do not upload to the same paths until "
+                    "they have disappeared, or the new files may be deleted too."}
 
 
 # ----------------------------------------------------------- simulations

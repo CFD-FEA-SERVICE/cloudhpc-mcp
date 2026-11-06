@@ -115,7 +115,8 @@ class FakeAPI:
             return ok({"url": "https://signed.test/upload"})
         if p == "/user/delete-cache":
             return ok(True)
-        if p.startswith("/storage/delete/"):
+        if p == "/storage/delete-bulk":
+            self.deleted = json.loads(req.read())
             return ok(True)
         return httpx.Response(404, json={"errors": ["not mocked"]})
 
@@ -240,6 +241,8 @@ async def test_delete_requires_confirmation(api):
     assert not any(m == "DELETE" and "/storage/delete" in p for m, p in api.calls)
     r = await server.delete_storage("caseA/FDS.tar.gz", confirm=True)
     assert r["deleted"]
+    assert ("DELETE", "/api/v2/storage/delete-bulk") in api.calls
+    assert api.deleted == {"bulk_ids": [11]}
 
 
 async def test_remote_desktop(api):
@@ -1369,3 +1372,28 @@ def test_kratos_family_guide_and_preflight(tmp_path):
     assert "kratos_app" in diag
     r = advisor.suggest("kratos", [4, 8, 16], ["highcpu", "highcore", "hypercore"])
     assert r["cpu"] == 8 and r["ram"] == "highcore"
+
+
+async def test_delete_is_reported_as_asynchronous(api):
+    r = await server.delete_storage("caseA/FDS.tar.gz", confirm=True)
+    assert "asynchronous" in r["note"] and "same path" in r["note"]
+
+
+async def test_delete_several_paths_in_one_call(api):
+    r = await server.delete_storage(paths=["caseA/FDS.tar.gz", "caseA/sub"])
+    assert r["confirmation_required"] and "2 item(s)" in r["summary"]
+    r = await server.delete_storage(paths=["caseA/FDS.tar.gz", "caseA/sub"], confirm=True)
+    assert r["deleted"] == ["caseA/FDS.tar.gz", "caseA/sub"]
+    assert [c for c in api.calls if c[1].endswith("/storage/delete-bulk")] == \
+        [("DELETE", "/api/v2/storage/delete-bulk")]
+    assert len(api.deleted["bulk_ids"]) == 2
+    assert "error" in await server.delete_storage()
+
+
+async def test_delete_folder_summary_mentions_content(api, monkeypatch):
+    from cloudhpc_mcp.client import CloudHPCClient
+    async def fake_view(self, path):
+        return {"id": 3, "type": "dir", "basename": path}
+    monkeypatch.setattr(CloudHPCClient, "view_by_path", fake_view)
+    r = await server.delete_storage("caseA/sub")
+    assert "everything inside it" in r["summary"]

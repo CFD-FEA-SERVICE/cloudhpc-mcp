@@ -273,11 +273,15 @@ class CloudHPCClient:
         except CloudHPCError:
             pass  # optional
 
-    async def delete_path(self, path: str) -> Any:
-        info = await self.view_by_path(path)
-        result = await self.call("DELETE", f"/storage/delete/{info['id']}")
+    async def delete_ids(self, ids: list[Any]) -> Any:
+        """Delete several storage objects (files or folders) in one asynchronous call."""
+        result = await self.call("DELETE", "/storage/delete-bulk", json={"bulk_ids": list(ids)})
         await self.refresh_cache()
         return result
+
+    async def delete_path(self, path: str) -> Any:
+        info = await self.view_by_path(path)
+        return await self.delete_ids([info["id"]])
 
     # ------------------------------------------------------------- transfers
     async def put_file(self, url: str, local_path: str) -> None:

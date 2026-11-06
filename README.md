@@ -70,7 +70,7 @@ connect with **read-only access** (see [Sign-in with OAuth](#sign-in-with-oauth)
 | `list_storage`, `list_results` | Browse your storage and result archives |
 | `download_results` ¹ | Download result archives and extract them locally |
 | `get_upload_link`, `get_download_link` | Temporary links to upload/download single files |
-| `delete_storage` | Delete a file or folder (**asks for confirmation**) |
+| `delete_storage` | Delete one or more files or folders (a folder with all its content) in a single request; deletion is asynchronous and takes a few minutes (**asks for confirmation**) |
 | `api_usage` | API rate limits and calls used |
 
 Actions that cost money or delete data (launching a run, a hard stop,
