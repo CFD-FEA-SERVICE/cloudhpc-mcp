@@ -30,6 +30,7 @@ STATUS = {
 ACTIVE_STATUSES = {20, 30, 40}
 
 UPLOAD_CONTENT_TYPE = "application/octet-stream"
+DELETE_BATCH = 1  # ids per delete-bulk request (the API fails with more than one)
 API_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 TRANSFER_TIMEOUT = httpx.Timeout(3600.0, connect=30.0)
 MAX_PAGES = 50  # safety cap for paginated listings
@@ -273,15 +274,31 @@ class CloudHPCClient:
         except CloudHPCError:
             pass  # optional
 
-    async def delete_ids(self, ids: list[Any]) -> Any:
-        """Delete several storage objects (files or folders) in one asynchronous call."""
-        result = await self.call("DELETE", "/storage/delete-bulk", json={"bulk_ids": list(ids)})
+    async def delete_ids(self, ids: list[Any]) -> dict[Any, str | None]:
+        """Delete storage objects (files or folders, asynchronous on the server).
+
+        delete-bulk currently fails with more than one id (HTTP 500/522), so each id
+        is sent in its own request; set DELETE_BATCH higher once the API is fixed.
+        Returns {id: None if accepted, else the error message}.
+        """
+        ids = list(ids)
+        status: dict[Any, str | None] = {}
+        for i in range(0, len(ids), DELETE_BATCH):
+            chunk = ids[i:i + DELETE_BATCH]
+            try:
+                await self.call("DELETE", "/storage/delete-bulk", json={"bulk_ids": chunk})
+                status.update({x: None for x in chunk})
+            except CloudHPCError as e:
+                status.update({x: str(e) for x in chunk})
         await self.refresh_cache()
-        return result
+        return status
 
     async def delete_path(self, path: str) -> Any:
         info = await self.view_by_path(path)
-        return await self.delete_ids([info["id"]])
+        err = (await self.delete_ids([info["id"]]))[info["id"]]
+        if err:
+            raise CloudHPCError(err)
+        return True
 
     # ------------------------------------------------------------- transfers
     async def put_file(self, url: str, local_path: str) -> None:

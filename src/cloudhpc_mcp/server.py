@@ -592,8 +592,8 @@ async def delete_storage(path: str | None = None, paths: list[str] | None = None
                          confirm: bool = False, ctx: Context = None) -> dict:
     """Delete one or more files or folders from storage. Irreversible.
 
-    path: one item; paths: several items (up to 50), deleted together in a single
-    request. Use paths when the user wants to delete several folders at once.
+    path: one item; paths: several items (up to 50), deleted after a single
+    confirmation. Use paths when the user wants to delete several folders at once.
     Deleting a folder deletes everything inside it: give the folder, never list
     its files one by one.
     Asynchronous: the items may stay visible for a few minutes after the call.
@@ -626,11 +626,16 @@ async def delete_storage(path: str | None = None, paths: list[str] | None = None
     stop = await _confirmed(ctx, summary, confirm)
     if stop:
         return stop
-    try:
-        await c.delete_ids([i["id"] for _, i in found])
-    except CloudHPCError as e:
-        return _err(e)
-    return {"deleted": [t for t, _ in found] if len(found) > 1 else found[0][0],
+    status = await c.delete_ids([i["id"] for _, i in found])
+    ok = [t for t, i in found if status.get(i["id"]) is None]
+    failed = [{"path": t, "error": status[i["id"]]} for t, i in found if status.get(i["id"])]
+    if not ok:
+        return {"error": "Nothing was deleted.", "failed": failed}
+    out: dict[str, Any] = {"deleted": ok if len(found) > 1 else ok[0]}
+    if failed:
+        out["failed"] = failed
+        out["warning"] = "Some items could not be deleted: see failed. Retry only those."
+    return {**out,
             "note": "Deletion is asynchronous: the items can still appear in the storage for a "
                     "few minutes. Do not delete again. Do not upload to the same paths until "
                     "they have disappeared, or the new files may be deleted too."}

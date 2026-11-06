@@ -1384,9 +1384,9 @@ async def test_delete_several_paths_in_one_call(api):
     assert r["confirmation_required"] and "2 item(s)" in r["summary"]
     r = await server.delete_storage(paths=["caseA/FDS.tar.gz", "caseA/sub"], confirm=True)
     assert r["deleted"] == ["caseA/FDS.tar.gz", "caseA/sub"]
-    assert [c for c in api.calls if c[1].endswith("/storage/delete-bulk")] == \
-        [("DELETE", "/api/v2/storage/delete-bulk")]
-    assert len(api.deleted["bulk_ids"]) == 2
+    # one id per request until the API handles lists (DELETE_BATCH = 1)
+    assert len([c for c in api.calls if c[1].endswith("/storage/delete-bulk")]) == 2
+    assert api.deleted == {"bulk_ids": [11]}
     assert "error" in await server.delete_storage()
 
 
@@ -1397,3 +1397,21 @@ async def test_delete_folder_summary_mentions_content(api, monkeypatch):
     monkeypatch.setattr(CloudHPCClient, "view_by_path", fake_view)
     r = await server.delete_storage("caseA/sub")
     assert "everything inside it" in r["summary"]
+
+
+async def test_delete_reports_partial_failures(api, monkeypatch):
+    from cloudhpc_mcp.client import CloudHPCClient, CloudHPCError
+    ids = iter([1, 2])
+    async def fake_view(self, path):
+        return {"id": next(ids), "type": "dir"}
+    calls = []
+    async def fake_call(self, method, path, json=None):
+        calls.append(json)
+        if json and json.get("bulk_ids") == [2]:
+            raise CloudHPCError("HTTP 500 on /storage/delete-bulk")
+        return True
+    monkeypatch.setattr(CloudHPCClient, "view_by_path", fake_view)
+    monkeypatch.setattr(CloudHPCClient, "call", fake_call)
+    r = await server.delete_storage(paths=["a", "b"], confirm=True)
+    assert r["deleted"] == ["a"] and r["failed"][0]["path"] == "b"
+    assert [c for c in calls if c and "bulk_ids" in c] == [{"bulk_ids": [1]}, {"bulk_ids": [2]}]
