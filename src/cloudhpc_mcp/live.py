@@ -32,10 +32,13 @@ RULES: dict[str, dict[str, Any]] = {
     },
     "fds": {
         "allowed": r"^[^/]+\.stop$",
-        "files": ["<CHID>.stop"],
-        "what": "FDS only checks <CHID>.stop: an empty file stops the run cleanly, writing "
-                "restart files if DT_RESTART is set (resume later with resume_simulation). "
-                "Recent FDS versions read a time (s) in the file and stop at that time. "
+        "files": ["<CHID>.stop", "<CHID>_cat.stop (cases with &CATF)"],
+        "what": "FDS only checks whether <CHID>.stop exists: as soon as it appears, FDS stops "
+                "cleanly at the next time step and writes .restart files (also without "
+                "DT_RESTART), so the run can be resumed later with resume_simulation. The "
+                "content of the file is ignored: FDS cannot be told to stop at a given time "
+                "through it (to stop at time t, follow the run with get_simulation and push "
+                "the .stop file when t is reached). With &CATF the file is <CHID>_cat.stop. "
                 "Other parameters cannot be changed while FDS runs.",
         "applied_when": "at the next time step after the copy",
     },
@@ -131,15 +134,18 @@ def check(family: str, path: str, text: str, current: str | None,
                              "keep it as in the current file.")
     elif family == "fds":
         chid = name[:-len(".stop")]
-        if not ({f"{chid}.fds", f"{chid}.out"} & folder_files):
+        base = chid[:-len("_cat")] if chid.endswith("_cat") else chid
+        if not ({f"{chid}.fds", f"{chid}.out", f"{base}.fds", f"{base}.out"} & folder_files):
             chids = sorted({f.rsplit(".", 1)[0] for f in folder_files if f.endswith(".fds")})
             errs.append(f"{name}: no FDS case with CHID '{chid}' in the folder"
                         + (f" (CHIDs found: {', '.join(chids)})." if chids else "."))
-        body = text.strip()
-        if body and not re.fullmatch(_NUM, body):
-            errs.append(f"{name}: must be empty (stop now) or contain only a time in seconds.")
-        notes.append("FDS stops" + (f" at t = {body} s" if body else " at the next time step")
-                     + "; restart files are written only if DT_RESTART is set.")
+        if text.strip():
+            notes.append(f"The content of {name} is ignored: FDS stops at the next time step "
+                         "as soon as the file exists, not at a time written in it. To stop at "
+                         "time t, wait until the run reaches t (get_simulation shows the "
+                         "simulated time) and push the .stop file then.")
+        notes.append("FDS stops at the next time step and writes .restart files: the run can "
+                     "be resumed later with resume_simulation.")
     elif family == "openradioss":
         if f"{name[:-len('.ctl')]}.rad" not in folder_files:
             rads = sorted(f for f in folder_files if re.search(r"_[0-9]{4}\.rad$", f))

@@ -54,7 +54,10 @@ GUIDES: dict[str, dict[str, Any]] = {
             "To resume a stopped run, launch it again in the SAME storage folder. If .restart "
             "files are present, RESTART=.TRUE. is added to &MISC automatically (a &MISC line "
             "is created if missing): do not edit the file and do not delete any .stop file.",
-            "FDS writes .restart files only if DT_RESTART is set on &DUMP: set it for long "
+            "A graceful stop (a <CHID>.stop file, <CHID>_cat.stop with &CATF) always writes "
+            ".restart files; its content is ignored and FDS stops at the next time step, not "
+            "at a time written in the file. Periodic .restart files during the run are "
+            "written only if DT_RESTART is set on &DUMP: set it for long "
             "runs, especially on preemptible instances (they can be restarted by the provider, "
             "typically up to about once a day). Aim for a restart file every few hours of run "
             "time: very short intervals slow the run and fill the disk.",

@@ -984,7 +984,8 @@ async def resume_simulation(simulation_id: int, confirm: bool = False,
         if not any(str(i.get("basename", "")).endswith(".restart") for i in items):
             return {"error": "No .restart files in the storage folder: FDS would start again "
                              "from time 0, so this is not a resume. FDS writes restart files "
-                             "only if DT_RESTART is set on &DUMP.",
+                             "when DT_RESTART is set on &DUMP or when the run is stopped "
+                             "gracefully with a .stop file.",
                     "folder": folder, "hint": MISSING_FILES_HINT if not items else None}
         notes.append("FDS finds the .restart files and adds RESTART=.TRUE. automatically.")
     else:

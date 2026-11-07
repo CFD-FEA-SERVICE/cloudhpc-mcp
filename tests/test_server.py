@@ -1139,10 +1139,14 @@ def test_live_checks():
     assert any("runTimeModifiable" in e for e in errs)
     errs, _ = live.check("openfoam", "system/fvSolution", "relaxationFactors { p 0.3; }", None, set())
     assert any("FoamFile" in e for e in errs)
-    errs, _ = live.check("fds", "room.stop", "", None, {"room.fds"})
-    assert not errs
+    errs, notes = live.check("fds", "room.stop", "", None, {"room.fds"})
+    assert not errs and any("restart" in n for n in notes)
+    errs, notes = live.check("fds", "room.stop", "1500.", None, {"room.fds"})
+    assert not errs and any("is ignored" in n for n in notes)   # accepted, content ignored
+    errs, _ = live.check("fds", "room_cat.stop", "", None, {"room.fds"})
+    assert not errs                                         # &CATF cases
     errs, _ = live.check("fds", "other.stop", "abc", None, {"room.fds"})
-    assert len(errs) == 2 and "room" in errs[0]
+    assert len(errs) == 1 and "room" in errs[0]
     errs, _ = live.check("openradioss", "crash_0001.ctl", "/ANIM\n", None, {"crash_0001.rad"})
     assert not errs
     errs, _ = live.check("openradioss", "crash_0001.ctl", "ANIM\n", None, {"crash_0001.rad"})
