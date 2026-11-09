@@ -424,6 +424,7 @@ and `"headers"`; Codex CLI uses `url` and `http_headers` in `config.toml`).
 | The assistant does not see the cloudHPC tools | Restart the app after editing its configuration; in terminal apps check with `/mcp` or `mcp list`. |
 | `command not found` / server fails to start | Use the full path of `cloudhpc-mcp` (`which cloudhpc-mcp`). Desktop apps do not load your shell's PATH, conda or virtual environments. |
 | `Unauthorized: the API key is invalid` | Copy the key again from your cloudHPC profile page. |
+| Upload or download fails with 403, "host not allowed" or a network error | Files are transferred directly to/from `storage.googleapis.com`. Allow that domain in your AI client's network settings (in Claude: the organisation's Capabilities / network access settings) or your company firewall, or open the link in a browser. |
 | Hosted endpoint: `Invalid header name` | Write the header exactly as `X-API-Key: your-api-key` (name, colon, space, key). |
 | Sign-in page: "The API key was not accepted" | Copy the key again from your profile ([how to find it](https://docs.cloudhpc.cloud/APIKEY/)); paste only the key, without spaces. |
 | The assistant asks for an OAuth client ID and secret | Remove the connector and add it again with the URL `https://mcp.cloudhpc.cloud/mcp`: it registers automatically, no client ID or secret is needed. |

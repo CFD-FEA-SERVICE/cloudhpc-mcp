@@ -373,6 +373,21 @@ PUSH_CONSUMED_HINT = (
     "(get_simulation with include_log=true).")
 
 
+STORAGE_NETWORK_HINT = (
+    "File transfers go directly to storage.googleapis.com (Google Cloud Storage), not through "
+    "the cloudHPC API. If the transfer fails with a proxy or network error (e.g. 403, 'host not "
+    "allowed', connection reset or timeout), the user's AI client or company firewall is "
+    "blocking that domain: ask the user to allow storage.googleapis.com in the network settings "
+    "of their AI client (in Claude: the organisation's Capabilities / network access settings), "
+    "or to open the link in a browser instead. Do not retry the same transfer in a loop.")
+
+
+def _transfer_err(e: Exception) -> dict:
+    out = _err(e)
+    out["network_hint"] = STORAGE_NETWORK_HINT
+    return out
+
+
 def _is_missing(msg: str) -> bool:
     m = msg.lower()
     return "not found" in m or "technical problem" in m or "no download link" in m
@@ -550,7 +565,11 @@ async def list_results(folder: str, ctx: Context = None) -> dict:
 
 @mcp.tool(annotations=READ)
 async def get_download_link(path: str, ctx: Context = None) -> dict:
-    """Get a temporary download link for a storage file (e.g. "myCase/FDS.tar.gz")."""
+    """Get a temporary download link for a storage file (e.g. "myCase/FDS.tar.gz").
+
+    The link points to storage.googleapis.com: if the client's network blocks that
+    domain, see network_hint in the reply.
+    """
     try:
         url = await client_for(ctx).download_url(path)
     except CloudHPCError as e:
@@ -558,12 +577,15 @@ async def get_download_link(path: str, ctx: Context = None) -> dict:
     name = os.path.basename(path)
     return {"path": path, "url": url,
             "curl": f"curl -L -o '{name}' '{url}'",
-            "note": "The link is temporary and gives access to this file: do not share it."}
+            "note": "The link is temporary and gives access to this file: do not share it.",
+            "network_hint": STORAGE_NETWORK_HINT}
 
 
 @mcp.tool(annotations=WRITE)
 async def get_upload_link(storage_folder: str, filename: str, ctx: Context = None) -> dict:
     """Get a signed URL to upload one file into a storage folder (remote clients).
+    The URL points to storage.googleapis.com: if the client's network blocks that
+    domain, see network_hint in the reply.
 
     For a case folder: compress the CONTENT of the folder (files at the archive
     root, no wrapping folder) into e.g. upload.tar.gz or case.zip, then upload it
@@ -584,6 +606,7 @@ async def get_upload_link(storage_folder: str, filename: str, ctx: Context = Non
             "windows_powershell": "Compress-Archive -Path CASE_FOLDER\\* -DestinationPath case.zip",
         },
         "note": "Upload the raw file (not multipart form). The link expires.",
+        "network_hint": STORAGE_NETWORK_HINT,
     }
 
 
@@ -1304,7 +1327,7 @@ if LOCAL:
                 await c.put_file(url, archive)
             await c.refresh_cache()
         except CloudHPCError as e:
-            return _err(e)
+            return _transfer_err(e) if "Upload failed" in str(e) else _err(e)
         UPLOADED_CASES[target] = info
         out = {"uploaded": True, "storage_folder": target,
                "archive": f"{target}/{files.UPLOAD_ARCHIVE}",
@@ -1367,6 +1390,8 @@ if LOCAL:
             except (CloudHPCError, ValueError, OSError) as e:
                 done.append({"file": name, "error": str(e)})
         out = {"local_dir": local_dir, "downloads": done}
+        if any("Download failed" in str(d.get("error", "")) for d in done):
+            out["network_hint"] = STORAGE_NETWORK_HINT
         if extract:
             logs = errors.check_solver_logs(local_dir)
             if logs:

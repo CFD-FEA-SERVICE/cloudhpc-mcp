@@ -1419,3 +1419,11 @@ async def test_delete_reports_partial_failures(api, monkeypatch):
     r = await server.delete_storage(paths=["a", "b"], confirm=True)
     assert r["deleted"] == ["a"] and r["failed"][0]["path"] == "b"
     assert [c for c in calls if c and "bulk_ids" in c] == [{"bulk_ids": [1]}, {"bulk_ids": [2]}]
+
+
+async def test_transfer_links_carry_network_hint(api):
+    r = await server.get_download_link("caseA/FDS.tar.gz")
+    assert "storage.googleapis.com" in r["network_hint"]
+    r = await server.get_upload_link("caseA", "upload.tar.gz")
+    assert "storage.googleapis.com" in r["network_hint"]
+    assert "network_hint" not in await server.list_storage("caseA")
