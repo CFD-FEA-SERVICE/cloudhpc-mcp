@@ -15,6 +15,16 @@ DOCS = "https://docs.cloudhpc.cloud/errors/"
 
 # id, severity, regex (case-insensitive), cause, fix, docs anchor
 CATALOG: list[dict[str, str]] = [
+    {"id": "telemac_steering", "severity": "error",
+     "pattern": r"Could not find your steering file",
+     "cause": "TELEMAC cannot find the steering (.cas) file it was asked to run.",
+     "fix": "Check the .cas name and the files it references (names and paths must match "
+            "the files in the case folder, case included).", "anchor": ""},
+    {"id": "telemac_exception", "severity": "error",
+     "pattern": r"TelemacException",
+     "cause": "TELEMAC stopped with an error.",
+     "fix": "See the line before the exception in openTELEMAC.log: it names the keyword or "
+            "file that caused it.", "anchor": ""},
     {"id": "kratos_app", "severity": "error",
      "pattern": r"needs the Kratos application '",
      "cause": "The case uses a Kratos application that is not installed on cloudHPC.",
@@ -519,7 +529,7 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                     "but a clean copy of the case uploads faster.", "incorrect_compressed_file")
 
     many = info.get("input_files") or []
-    if fam in ("contam", "energyplus", "telemac", "swan", "su2") and len(many) > 1:
+    if fam in ("contam", "energyplus", "swan", "su2") and len(many) > 1:
         add("warning", f"{len(many)} input files found ({', '.join(many[:5])}): only the first "
                        f"in alphabetical order ({many[0]}) is run. Keep one per case folder.", "")
 
@@ -533,7 +543,27 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
         add("info", "No .epw weather file: only design days can be simulated, not an annual run.", "")
 
     if fam == "telemac":
-        add("info", "This solver entry runs TELEMAC-3D: a TELEMAC-2D steering file will not run.", "")
+        cas = {c: _read_text(os.path.join(folder, c)) for c in many}
+        coupled = {os.path.basename(m.strip().strip("'\"")).lower()
+                   for t in cas.values()
+                   for m in re.findall(r"STEERING FILE\s*[=:]\s*(\S+)", t, re.I)}
+        mains = [c for c in cas if c.lower() not in coupled]
+        if not mains:
+            add("error", "Every .cas file is referenced by another as a coupled steering file: "
+                         "no main case to run.", "")
+        for c in mains:
+            low, t = c.lower(), cas[c].upper()
+            if low.startswith(("t3d_", "t2d_", "tom_", "art_")):
+                continue
+            if re.search(r"NUMBER OF HORIZONTAL LEVELS|3D RESULT FILE|NON-HYDROSTATIC VERSION", t) \
+                    or re.search(r"NUMBER OF (DIRECTIONS|FREQUENCIES)", t):
+                continue
+            add("warning", f"{c}: module not recognised from the name or keywords, it will be "
+                           "run with TELEMAC-3D. Rename it t2d_*.cas for TELEMAC-2D, tom_*.cas "
+                           "for TOMAWAC or art_*.cas for ARTEMIS.", "")
+        if len(mains) > 1:
+            add("info", f"{len(mains)} main .cas files ({', '.join(mains[:5])}): they run one "
+                        "after another, each on all cores.", "")
 
     if fam == "liggghts":
         ins = info.get("input_files") or []

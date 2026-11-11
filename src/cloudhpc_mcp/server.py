@@ -496,8 +496,10 @@ async def suggest_resources(
     """Suggest vCPU and RAM type for a run, following cloudHPC scalability rules.
 
     solver: script name (e.g. "fds6.9.1", "openFoam-v2406") or family
-            ("fds", "openfoam", "calculix", "code_aster", "openradioss", "su2").
-    cells: CFD cells (OpenFOAM/SU2). nodes: FEA nodes (CalculiX/code_aster).
+            ("fds", "openfoam", "calculix", "code_aster", "openradioss", "su2", "telemac",
+            ... any family listed by solver_guide).
+    cells: CFD cells (OpenFOAM/SU2). nodes: FEA nodes (CalculiX/code_aster) or mesh
+    nodes (openTELEMAC).
     elements: OpenRadioss / OpenCourant elements.
     particles: LAMMPS atoms or DualSPHysics particles. For Palabos/T-Flows pass the
             lattice nodes / cells as cells; for preCICE the OpenFOAM cells.

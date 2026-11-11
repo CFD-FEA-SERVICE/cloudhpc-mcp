@@ -405,20 +405,37 @@ GUIDES: dict[str, dict[str, Any]] = {
         "docs": "https://www.openlb.net/documentation/",
     },
     "telemac": {
-        "name": "openTELEMAC v8p5r1 (TELEMAC-3D)",
+        "name": "openTELEMAC v8p5r1 (TELEMAC-3D, TELEMAC-2D, TOMAWAC, ARTEMIS)",
         "input": [
-            "One .cas steering file (with several, only the first in alphabetical order is "
-            "run) plus the geometry, boundary-condition and other files it references, in the "
-            "same folder.",
-            "The case is run with TELEMAC-3D: 2D (TELEMAC-2D) steering files are not run by "
-            "this solver entry.",
+            "One or more .cas steering files at the root of the case folder, plus the "
+            "geometry, boundary-condition and other files they reference.",
+            "Module per .cas file: by name prefix t3d_ (TELEMAC-3D), t2d_ (TELEMAC-2D), tom_ "
+            "(TOMAWAC), art_ (ARTEMIS); without a prefix, TELEMAC-3D keywords (NUMBER OF "
+            "HORIZONTAL LEVELS, 3D RESULT FILE, NON-HYDROSTATIC VERSION) or TOMAWAC keywords "
+            "(NUMBER OF DIRECTIONS/FREQUENCIES) decide; otherwise TELEMAC-3D with a warning. "
+            "Use a prefix for TELEMAC-2D and ARTEMIS.",
+            "Coupled runs (e.g. TELEMAC-2D + TOMAWAC or GAIA): only the main .cas is run; a "
+            ".cas named in another file's '... STEERING FILE' keyword is read by the main run, "
+            "not launched on its own.",
+            "A FORTRAN FILE named in the steering file is compiled by TELEMAC at the start of "
+            "the run (GFortran).",
         ],
-        "automatic": ["The number of parallel partitions (ncsize) is set to the number of "
-                      "physical cores."],
+        "automatic": [
+            "The number of parallel partitions (ncsize) is set to the number of physical cores.",
+            "Several main .cas files are run one after another, each on all cores; completed "
+            "ones are skipped when the run is resumed.",
+            "A run is marked failed if TELEMAC stops with an error (TelemacException), even "
+            "when its exit code is 0.",
+        ],
         "parallel": "MPI, one process per physical core: use highcore or hypercore.",
         "resources": "Keep several thousand mesh nodes per core; very small meshes do not "
                      "benefit from many cores.",
-        "logs": ["openTELEMAC.log"],
+        "restart": [
+            "An interrupted case starts again from the beginning. To continue from the last "
+            "result set COMPUTATION CONTINUED = YES and PREVIOUS COMPUTATION FILE in the "
+            "steering file.",
+        ],
+        "logs": ["openTELEMAC.log (one '===== date : command' header per case)"],
         "docs": "https://www.opentelemac.org",
     },
     "desktop": {

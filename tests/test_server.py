@@ -1427,3 +1427,23 @@ async def test_transfer_links_carry_network_hint(api):
     r = await server.get_upload_link("caseA", "upload.tar.gz")
     assert "storage.googleapis.com" in r["network_hint"]
     assert "network_hint" not in await server.list_storage("caseA")
+
+
+def test_telemac_guide_diagnosis_and_resources(tmp_path):
+    from cloudhpc_mcp import errors
+    g = guides.guide_for("telemac")
+    assert "TOMAWAC" in g["name"] and g["restart"]
+    diag = {x["id"]: x for x in errors.diagnose(
+        "Could not find your steering file t2d_x.cas\nTelemacException: bad keyword")}
+    assert "telemac_steering" in diag and "telemac_exception" in diag
+    r = advisor.suggest("telemac", [2, 4, 8, 16, 32, 64], ["highcpu", "highcore", "hypercore"],
+                        nodes=160_000)
+    assert r["cpu"] == 32 and r["ram"] == "highcore"
+    d = _case(tmp_path, "tel2", {
+        "t2d_main.cas": "TOMAWAC STEERING FILE = tom_waves.cas\n",
+        "tom_waves.cas": "NUMBER OF DIRECTIONS = 12\n", "other.cas": "TIME STEP = 1\n",
+        "geo.slf": "x"})
+    msgs = " | ".join(i["issue"] for i in errors.preflight(advisor.inspect_case(str(d))))
+    assert "other.cas" in msgs and "TELEMAC-3D" in msgs      # unprefixed, no 3D keywords
+    assert "tom_waves.cas" not in msgs.split("main .cas files")[-1]
+    assert "only the first" not in msgs

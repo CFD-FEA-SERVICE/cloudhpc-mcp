@@ -920,8 +920,20 @@ def _suggest(family: str,
                           "enough for most buildings (9.4.0 uses one thread)."],
                 "warnings": warnings}
 
-    if family in ("liggghts", "telemac"):
-        name = "LIGGGHTS" if family == "liggghts" else "openTELEMAC"
+    if family == "telemac":
+        needed = max((nodes or 0) // 5_000, 2) if nodes else 8
+        notes.append("openTELEMAC runs one MPI process per physical core: use highcore or "
+                     "hypercore.")
+        if nodes:
+            notes.append(f"Several thousand mesh nodes per core (~5,000) -> {needed} cores for "
+                         f"{nodes:,} nodes; small meshes do not benefit from many cores.")
+        else:
+            warnings.append("Number of mesh nodes unknown: 8 vCPU as a starting point.")
+        return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": physical_ram(),
+                "ideal_cpu": needed, "notes": notes, "warnings": warnings}
+
+    if family == "liggghts":
+        name = "LIGGGHTS"
         return {"family": family, "cpu": _pick_cpu(8, cpu_options), "ram": physical_ram(),
                 "notes": [f"{name} runs one MPI process per physical core: use highcore or "
                           "hypercore."],
