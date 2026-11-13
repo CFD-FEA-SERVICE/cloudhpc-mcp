@@ -41,12 +41,13 @@ FAMILIES = {
     "xbeach": "XBeach",
     "custom": "Custom scripts (bash / Python)",
     "kratos": "Kratos Multiphysics",
-    "precice": "preCICE (coupled OpenFOAM / CalculiX / code_aster)",
+    "precice": "preCICE (coupled OpenFOAM / CalculiX / code_aster / FDS)",
     "lammps": "LAMMPS",
     "palabos": "Palabos",
     "freefem": "FreeFEM",
     "tflows": "T-Flows",
     "dualsphysics": "DualSPHysics",
+    "phasicflow": "PhasicFlowPlus (CFD-DEM, GPU)",
     "desktop": "Remote desktop (static instance)",
     "postprocess": "cloudHPC automatic post-processing",
     "other": "Other / generic",
@@ -74,7 +75,8 @@ def family_of(script: str) -> str:
                         ("cloudhpc-postprocess", "postprocess"), ("precice", "precice"),
                         ("lammps", "lammps"), ("palabos", "palabos"), ("freefem", "freefem"),
                         ("t-flows", "tflows"), ("tflows", "tflows"),
-                        ("dualsphysics", "dualsphysics"), ("kratos", "kratos")):
+                        ("dualsphysics", "dualsphysics"), ("kratos", "kratos"),
+                        ("phasicflow", "phasicflow")):
         if s.startswith(prefix):
             return fam
     if s.startswith("fds"):
@@ -237,6 +239,12 @@ def _read(path: str) -> str:
         return ""
 
 
+def _fds_prci(text: str) -> str | None:
+    """Content of the &PRCI namelist (fds-precice adapter), or None."""
+    m = re.search(r"&PRCI\b((?:'[^']*'|\"[^\"]*\"|[^'\"/])*)/", text, re.S)
+    return m.group(1) if m else None
+
+
 def _precice_case(folder: str) -> dict[str, Any]:
     """Participants of precice-config.xml and the folders that provide them."""
     config = _read(os.path.join(folder, "precice-config.xml"))
@@ -245,6 +253,7 @@ def _precice_case(folder: str) -> dict[str, Any]:
     types: dict[str, str] = {}
     ignored: list[str] = []
     aster_pending: list[str] = []
+    fds_info: dict[str, dict[str, Any]] = {}
     for d in sorted(os.listdir(folder)):
         path = os.path.join(folder, d)
         if not os.path.isdir(path) or d.startswith("."):
@@ -269,6 +278,31 @@ def _precice_case(folder: str) -> dict[str, Any]:
                 aster_pending.append(d)
                 types[d] = kind
                 continue
+        elif glob.glob(os.path.join(path, "*.fds")):
+            withprci = [f for f in sorted(glob.glob(os.path.join(path, "*.fds")))
+                        if _fds_prci(_read(f)) is not None]
+            if not withprci:
+                ignored.append(f"{d} (.fds file(s) without a &PRCI line)")
+                continue
+            kind = "fds"
+            if len(withprci) > 1:
+                fds_info[d] = {"several": [os.path.basename(f) for f in withprci]}
+                name = "?"
+            else:
+                text = _read(withprci[0])
+                prci = _fds_prci(text) or ""
+                pm = re.search(r"\bPARTICIPANT\s*=\s*['\"]([^'\"]*)['\"]", prci, re.I)
+                cm = re.search(r"\bCONFIG_FILE\s*=\s*['\"]([^'\"]*)['\"]", prci, re.I)
+                tm = re.search(r"&TIME\b(?:'[^']*'|\"[^\"]*\"|[^'\"/])*?\bT_END\s*=\s*([-+0-9.eEdD]+)",
+                               text, re.I | re.S)
+                name = (pm.group(1) if pm and pm.group(1) else "Fluid")
+                fds_info[d] = {
+                    "file": os.path.basename(withprci[0]),
+                    "meshes": len(re.findall(r"^\s*&MESH\b", text, re.M | re.I)),
+                    "mult_id": bool(re.search(r"^\s*&MESH\b[^/]*\bMULT_ID", text, re.M | re.I)),
+                    "config_file": cm.group(1) if cm else "precice-config.xml",
+                    "t_end": _num(tm.group(1).lower().replace("d", "e")) if tm else 1.0,
+                }
         elif os.path.exists(os.path.join(path, "run.sh")):
             ignored.append(f"{d} (solver not supported)")
             continue
@@ -276,6 +310,9 @@ def _precice_case(folder: str) -> dict[str, Any]:
             continue
         if not name:
             ignored.append(f"{d} ({kind} folder without participant name)")
+            continue
+        if name == "?":       # FDS folder with several &PRCI files
+            types[d] = kind
             continue
         if name not in parts:
             ignored.append(f"{d} (participant '{name}' not in precice-config.xml)")
@@ -288,8 +325,16 @@ def _precice_case(folder: str) -> dict[str, Any]:
         provided[free[0]] = aster_pending
     else:
         unnamed_aster = aster_pending
+    m = re.search(r'<max-time\s+value="([^"]+)"', config)
+    max_time = _num(m.group(1)) if m else None
+    if max_time is None:
+        a = re.search(r'<max-time-windows\s+value="([^"]+)"', config)
+        b = re.search(r'<time-window-size\s+value="([^"]+)"', config)
+        if a and b and _num(a.group(1)) is not None and _num(b.group(1)) is not None:
+            max_time = _num(a.group(1)) * _num(b.group(1))
     return {"participants": parts, "folders": provided, "solver_of_folder": types,
-            "unnamed_code_aster": unnamed_aster,
+            "unnamed_code_aster": unnamed_aster, "fds": fds_info, "max_time": max_time,
+            "implicit": bool(re.search(r"<coupling-scheme:[a-z-]*implicit", config)),
             "ignored_folders": ignored,
             "absolute_paths": bool(re.search(r'(exchange-directory|directory)="/', config))}
 
@@ -464,6 +509,49 @@ def _tflows_cases(folder: str) -> list[dict[str, Any]]:
     return cases
 
 
+_PFP_SOLVERS = ("unresolvedSpherePFPlus", "unresolvedGrainPFPlus", "resolvedSpherePFPlus",
+                "resolvedSphereVoFPFPlus")
+
+
+def _dict_get(path: str, key: str) -> str | None:
+    text = re.sub(r"//[^\n]*", "", _read(path))
+    m = re.search(rf"^\s*{re.escape(key)}\s+([^;\s]+)\s*;", text, re.M)
+    return m.group(1) if m else None
+
+
+def _phasicflow_cases(folder: str) -> list[dict[str, Any]]:
+    """PhasicFlowPlus CFD-DEM cases: system/controlDict + settings/settingsDict."""
+    def looks(p):
+        return os.path.exists(os.path.join(p, "system", "controlDict")) and \
+            os.path.exists(os.path.join(p, "settings", "settingsDict"))
+    dirs = ["."] if looks(folder) else sorted(
+        d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))
+        and not d.startswith((".", "processor")) and looks(os.path.join(folder, d)))
+    cases = []
+    for d in dirs:
+        p = os.path.join(folder, d)
+        g = lambda pat: sorted(os.path.basename(x) for x in glob.glob(os.path.join(p, pat)))  # noqa: E731
+        fluid = next((x for x in ("FluidField", "Fluid", "fluid") if os.path.isdir(os.path.join(p, x))), None)
+        cases.append({
+            "folder": d,
+            "coupling": os.path.exists(os.path.join(p, "constant", "couplingProperties")),
+            "application": _dict_get(os.path.join(p, "system", "controlDict"), "application"),
+            "mesh": bool(glob.glob(os.path.join(p, "constant", "polyMesh", "faces*"))),
+            "block_mesh": os.path.exists(os.path.join(p, "system", "blockMeshDict")),
+            "msh": g("*.msh"),
+            "cells": _openfoam_cells(p),
+            "cfd_start": _dict_get(os.path.join(p, "system", "controlDict"), "startTime") or "0",
+            "dem_start": _dict_get(os.path.join(p, "settings", "settingsDict"), "startTime") or "0",
+            "dem_end": _dict_get(os.path.join(p, "settings", "settingsDict"), "endTime"),
+            "fluid_folder": fluid,
+            "fluid_u": bool(fluid and (glob.glob(os.path.join(p, fluid, "U"))
+                                       or glob.glob(os.path.join(p, fluid, "U.gz")))),
+            "user_scripts": [x for x in ("Allrun", "runThisCase", "Allrun.pre", "mesh/Allmesh")
+                             if os.path.exists(os.path.join(p, x))],
+        })
+    return cases
+
+
 def _saturne_case(folder: str) -> str | None:
     """code_saturne case = folder with DATA and SRC, at the root or one level down."""
     if os.path.isdir(os.path.join(folder, "DATA")) and os.path.isdir(os.path.join(folder, "SRC")):
@@ -510,6 +598,17 @@ def inspect_case(folder: str) -> dict[str, Any]:
             glob.glob(os.path.join(folder, "*", p)) for p in ("MainKratos.py", "ProjectParameters*.json")):
         info["family"] = "kratos"
         info["kratos_cases"] = _kratos_cases(folder)
+        return info
+
+    pfp = _phasicflow_cases(folder)
+    if pfp:
+        info["family"] = "phasicflow"
+        info["phasicflow_cases"] = pfp
+        cells = [c["cells"] for c in pfp if c["cells"]]
+        info["cells"] = max(cells) if cells else None
+        if info["cells"] is None:
+            info["notes"].append("Fluid mesh not found (generated at run time?): ask the user "
+                                 "for the number of cells.")
         return info
 
     if files("precice-config.xml"):
@@ -686,6 +785,14 @@ def inspect_case(folder: str) -> dict[str, Any]:
 
     if files("params.txt"):
         info["family"] = "xbeach"
+        vals: dict[str, str] = {}
+        for ln in _read(os.path.join(folder, "params.txt")).splitlines():
+            ln = ln.split("%", 1)[0]
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                vals[k.strip().lower()] = v.strip().lower()
+        info["wavemodel"] = vals.get("wavemodel") or None
+        info["nonhydrostatic"] = vals.get("wavemodel") == "nonh" or vals.get("nonh") == "1"
         return info
 
     cfgs = [c for c in files("*.cfg") if c != "config_CFD.cfg"]
@@ -759,7 +866,8 @@ def _suggest(family: str,
             elements: int | None = None,
             fds: dict | None = None,
             prefer_speed: bool = False,
-            particles: int | None = None) -> dict[str, Any]:
+            particles: int | None = None,
+            case_info: dict | None = None) -> dict[str, Any]:
     """Return a vCPU/RAM recommendation with reasoning and warnings."""
     notes: list[str] = []
     warnings: list[str] = []
@@ -959,21 +1067,37 @@ def _suggest(family: str,
                 "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point."]}
 
     if family == "xbeach":
+        if case_info and case_info.get("nonhydrostatic"):
+            return {"family": family, "cpu": _pick_cpu(2, cpu_options), "ram": "standard",
+                    "notes": ["Non-hydrostatic case (wavemodel = nonh): XBeach runs on ONE MPI "
+                              "process (more processes create spurious waves at the subdomain "
+                              "boundaries), so 2 vCPU are enough; more cores would stay idle."],
+                    "warnings": warnings}
         return {"family": family, "cpu": _pick_cpu(8, cpu_options), "ram": physical_ram(),
                 "notes": ["XBeach (MPI) runs one process per physical core: use highcore or "
-                          "hypercore."],
+                          "hypercore. Non-hydrostatic cases (wavemodel = nonh) run on one "
+                          "process: use 2 vCPU for those."],
                 "warnings": ["No validated scaling rule yet: 8 vCPU as a starting point."]}
 
     if family == "precice":
+        pc = (case_info or {}).get("precice") or {}
+        fds_cores = sum(f.get("meshes") or 0 for f in (pc.get("fds") or {}).values())
+        others = sum(1 for k in (pc.get("solver_of_folder") or {}).values() if k != "fds")
         needed = max(((cells or 0) // 75_000) + 2, 4) if cells else 8
-        notes.append("Physical cores are split among the participants (CalculiX or code_aster at most 8 "
-                     "threads each, the rest to OpenFOAM): use highcore or hypercore.")
+        notes.append("Physical cores are split among the participants (FDS one per &MESH, "
+                     "CalculiX or code_aster at most 8 threads each, the rest to OpenFOAM): use "
+                     "highcore or hypercore.")
         if cells:
             notes.append(f"~75,000 OpenFOAM cells per core plus 2 cores for the structure "
                          f"-> {needed} cores.")
-        else:
+        elif not fds_cores:
             warnings.append("OpenFOAM cell count unknown: 8 vCPU as a starting point.")
-        return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": physical_ram(),
+        if fds_cores:
+            needed = max(needed if cells else 0, fds_cores + 2 * max(others, 1))
+            notes.append(f"FDS participant(s): {fds_cores} &MESH -> {fds_cores} MPI processes, "
+                         "plus cores for the other participants.")
+        pick = _pick_cpu_up if fds_cores else _pick_cpu
+        return {"family": family, "cpu": pick(needed, cpu_options), "ram": physical_ram(),
                 "ideal_cpu": needed, "notes": notes, "warnings": warnings}
 
     if family == "lammps":
@@ -1024,6 +1148,19 @@ def _suggest(family: str,
         return {"family": family, "cpu": _pick_cpu(16, cpu_options), "ram": "highcpu",
                 "notes": ["No GPU type available: CPU run with OpenMP on all vCPU."],
                 "warnings": warnings}
+
+    if family == "phasicflow":
+        gpu = next((r for r in sorted(ram_avail) if "gpu" in r.lower()), None)
+        needed = max(4, min((cells or 0) // 10_000, 16)) if cells else 4
+        notes.append("The DEM runs on the GPU; the CFD uses one MPI process per physical core, "
+                     "at most one per 10,000 cells.")
+        if cells:
+            notes.append(f"{cells:,} cells -> up to {max(cells // 10_000, 1)} CFD processes.")
+        if not gpu:
+            return {"error": "PhasicFlowPlus needs a GPU instance and no GPU RAM type is "
+                             "available on this account.", "family": family}
+        return {"family": family, "cpu": _pick_cpu(needed, cpu_options), "ram": gpu,
+                "notes": notes, "warnings": warnings}
 
     if family == "custom":
         return {"family": family, "cpu": _pick_cpu(2, cpu_options), "ram": "standard",

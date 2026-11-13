@@ -450,7 +450,7 @@ async def list_machine_options(ctx: Context = None) -> dict:
         "physical_cores": "physical cores = vCPU on highcore/hypercore, vCPU / 2 on highcpu, "
                           "standard, highmem, hypercpu. MPI-only solvers (OpenFOAM, DAFoam, "
                           "SU2, code_saturne, XBeach, TELEMAC, LIGGGHTS, LAMMPS, Palabos, "
-                          "T-Flows, preCICE) run one process per "
+                          "T-Flows, preCICE, the CFD part of PhasicFlowPlus) run one process per "
                           "physical core.",
     }
 
@@ -464,7 +464,7 @@ async def solver_guide(solver: str) -> dict:
     ("fds", "openfoam", "dafoam", "calculix", "code_aster", "codesaturne", "su2",
     "openradioss", "contam", "energyplus", "liggghts", "openlb", "telemac", "swan",
     "xbeach", "custom", "precice", "lammps", "palabos", "freefem", "tflows",
-    "dualsphysics", "kratos"). Makes no API calls. Includes restart/relaunch behaviour
+    "dualsphysics", "kratos", "phasicflow"). Makes no API calls. Includes restart/relaunch behaviour
     (e.g. FDS restart and .stop files) and optional cloudHPC settings.
     Always call it when the user asks how to prepare, structure or run a case for a
     solver: it is the authoritative description of how cloudHPC runs that solver.
@@ -502,13 +502,16 @@ async def suggest_resources(
     nodes (openTELEMAC).
     elements: OpenRadioss / OpenCourant elements.
     particles: LAMMPS atoms or DualSPHysics particles. For Palabos/T-Flows pass the
-            lattice nodes / cells as cells; for preCICE the OpenFOAM cells.
+            lattice nodes / cells as cells; for preCICE the OpenFOAM cells (with FDS
+            participants use case_folder, or add one core per FDS &MESH); for
+            PhasicFlowPlus the fluid cells. XBeach with wavemodel = nonh: 2 vCPU.
     fds_*: FDS mesh info if the .fds file cannot be read directly.
     case_folder: (local mode) folder to inspect automatically instead.
     prefer_speed: favour the faster hypercore/hypercpu instances over cost.
     """
     family = solver if solver in advisor.FAMILIES else advisor.family_of(solver)
     fds_info = None
+    info = None
     if case_folder and LOCAL:
         try:
             info = advisor.inspect_case(case_folder)
@@ -530,7 +533,7 @@ async def suggest_resources(
         return _catalog_err(e)
     return advisor.suggest(family, cpus, rams, cells=cells, nodes=nodes,
                            elements=elements, fds=fds_info, prefer_speed=prefer_speed,
-                           particles=particles)
+                           particles=particles, case_info=info)
 
 
 # -------------------------------------------------------------- storage

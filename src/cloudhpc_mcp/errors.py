@@ -15,6 +15,60 @@ DOCS = "https://docs.cloudhpc.cloud/errors/"
 
 # id, severity, regex (case-insensitive), cause, fix, docs anchor
 CATALOG: list[dict[str, str]] = [
+    {"id": "precice_early_exit", "severity": "error",
+     "pattern": r"exited before the coupling was complete",
+     "cause": "A preCICE participant ended before the coupling end time (e.g. OpenFOAM SIMPLE "
+              "stopped by residualControl, endTime or FDS T_END lower than max-time): the "
+              "others were stopped because they would have waited forever.",
+     "fix": "Remove residualControl from SIMPLE and set endTime / T_END at least equal to "
+            "max-time of precice-config.xml.", "anchor": ""},
+    {"id": "precice_waiting", "severity": "error",
+     "pattern": r"waiting for coupling data that will never arrive",
+     "cause": "One participant's solver finished while another was still in its solver after "
+              "10 minutes: it was stopped.",
+     "fix": "Make all participants end at the coupling end time (max-time): check endTime, "
+            "T_END and the end conditions of each solver.", "anchor": ""},
+    {"id": "precice_hung", "severity": "error",
+     "pattern": r"coupled run looks hung|reported a fatal error and is still running",
+     "cause": "The coupled run was stopped because a participant printed a fatal error without "
+              "exiting, or no participant wrote to its log for an hour.",
+     "fix": "Read the log.<participant> named in the message for the first error.", "anchor": ""},
+    {"id": "precice_convergence", "severity": "warning",
+     "pattern": r"coupling not converging",
+     "cause": "Many implicit coupling time windows reached max-iterations without converging: "
+              "results are likely inaccurate.",
+     "fix": "Use relTol 0 on the *Final solvers of the fluid and check the convergence measures "
+            "and acceleration in precice-config.xml.", "anchor": ""},
+    {"id": "precice_no_folder", "severity": "error",
+     "pattern": r"has no supported solver folder",
+     "cause": "A participant of precice-config.xml has no folder that cloudHPC can run.",
+     "fix": "Add one folder per participant (OpenFOAM, CalculiX, code_aster or FDS), named as in "
+            "solver_guide('precice').", "anchor": ""},
+    {"id": "xbeach_error", "severity": "error",
+     "pattern": r"XBeach stopped with an error|XBeach reported an error|did not reach 'End of program xbeach'",
+     "cause": "XBeach stopped with an error or ended before the end of the simulation.",
+     "fix": "Read XBerror.txt (printed in the output) and XBlog.txt: they name the params.txt "
+            "keyword or input file that failed.", "anchor": ""},
+    {"id": "xbeach_nonh", "severity": "info",
+     "pattern": r"XBeach runs on 1 MPI process",
+     "cause": "Non-hydrostatic case (wavemodel = nonh): XBeach ran on one process.",
+     "fix": "Select 2 vCPU for these cases: more cores stay idle.", "anchor": ""},
+    {"id": "pfp_gpu", "severity": "error",
+     "pattern": r"No NVIDIA GPU found",
+     "cause": "PhasicFlowPlus runs the DEM on the GPU and was launched on a CPU instance.",
+     "fix": "Relaunch on a GPU RAM type (e.g. basegpu).", "anchor": ""},
+    {"id": "pfp_application", "severity": "error",
+     "pattern": r"system/controlDict 'application' is",
+     "cause": "The CFD-DEM solver in system/controlDict is not a PhasicFlowPlus solver.",
+     "fix": "Set application to unresolvedSpherePFPlus, unresolvedGrainPFPlus, "
+            "resolvedSpherePFPlus or resolvedSphereVoFPFPlus.", "anchor": ""},
+    {"id": "pfp_inputs", "severity": "error",
+     "pattern": r"No PhasicFlowPlus case found|Time folder for CFD-DEM startTime|"
+                r"No fluid velocity field U|No mesh: provide constant/polyMesh",
+     "cause": "The PhasicFlowPlus case is incomplete (case files, mesh, DEM stage end time or "
+              "initial fluid fields).",
+     "fix": "Follow the message; see solver_guide('phasicflow') for the expected layout.",
+     "anchor": ""},
     {"id": "telemac_steering", "severity": "error",
      "pattern": r"Could not find your steering file",
      "cause": "TELEMAC cannot find the steering (.cas) file it was asked to run.",
@@ -22,9 +76,11 @@ CATALOG: list[dict[str, str]] = [
             "the files in the case folder, case included).", "anchor": ""},
     {"id": "telemac_exception", "severity": "error",
      "pattern": r"TelemacException",
+     "matched": r"TelemacException:\s*\S",
      "cause": "TELEMAC stopped with an error.",
-     "fix": "See the line before the exception in openTELEMAC.log: it names the keyword or "
-            "file that caused it.", "anchor": ""},
+     "fix": "Read the TelemacException message and the lines just above the traceback in "
+            "openTELEMAC.log: they name the file, keyword or program that failed.",
+     "anchor": ""},
     {"id": "kratos_app", "severity": "error",
      "pattern": r"needs the Kratos application '",
      "cause": "The case uses a Kratos application that is not installed on cloudHPC.",
@@ -330,7 +386,11 @@ def diagnose(text: str) -> list[dict[str, Any]]:
     for entry, rx in _COMPILED:
         m = rx.search(text or "")
         if m:
-            line = next((ln.strip() for ln in (text or "").splitlines() if rx.search(ln)), m.group(0))
+            lines = [ln.strip() for ln in (text or "").splitlines() if rx.search(ln)]
+            if entry.get("matched"):   # prefer the line with the actual message
+                better = [ln for ln in lines if re.search(entry["matched"], ln)]
+                lines = better or lines
+            line = lines[0] if lines else m.group(0)
             if entry["id"] == "of_polymesh":
                 alt = _polymesh_entry(text, m.end())
                 if alt:
@@ -377,6 +437,56 @@ def _read_text(path: str) -> str:
             return f.read()
     except OSError:
         return ""
+
+
+def _strip_c(text: str) -> str:
+    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", text, flags=re.S))
+
+
+def _block(text: str, key: str) -> str | None:
+    """Content of the first 'key { ... }' block (balanced braces), or None."""
+    m = re.search(rf"(?<![\w\"]){re.escape(key)}\"?\s*\{{", text)
+    if not m:
+        return None
+    depth, i = 1, m.end()
+    while i < len(text) and depth:
+        depth += {"{": 1, "}": -1}.get(text[i], 0)
+        i += 1
+    return text[m.end():i - 1]
+
+
+def _simple_residual(fv_solution: str) -> bool:
+    simple = _block(_strip_c(fv_solution), "SIMPLE")
+    rc = _block(simple, "residualControl") if simple else None
+    return bool(rc and re.search(r"[^\s;{}]+\s+[^\s;{}]+\s*;", rc))
+
+
+def _final_reltol(fv_solution: str) -> list[str]:
+    solvers = _block(_strip_c(fv_solution), "solvers")
+    if not solvers:
+        return []
+    rel, base, order = {}, {}, []
+    for m in re.finditer(r'("[^"]+"|[^\s{};]+)\s*\{', solvers):
+        name = m.group(1).strip('"')
+        body = _block(solvers[m.start():], m.group(1)) or ""
+        order.append(name)
+        r = re.search(r"\brelTol\s+([^\s;]+)\s*;", body)
+        if r:
+            rel[name] = r.group(1)
+        b = re.search(r"\$([A-Za-z_][\w.]*)\s*;", body)
+        if b:
+            base[name] = b.group(1)
+    bad = []
+    for n in order:
+        if "Final" not in n:
+            continue
+        r = rel.get(n) or rel.get(base.get(n, ""))
+        try:
+            if r is not None and float(r) > 0:
+                bad.append(f"{n} relTol {r}")
+        except ValueError:
+            pass
+    return bad
 
 
 def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
@@ -561,6 +671,10 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
             add("warning", f"{c}: module not recognised from the name or keywords, it will be "
                            "run with TELEMAC-3D. Rename it t2d_*.cas for TELEMAC-2D, tom_*.cas "
                            "for TOMAWAC or art_*.cas for ARTEMIS.", "")
+        for c in mains:
+            if re.search(r"\s", c):
+                add("warning", f"The file name '{c}' contains spaces: TELEMAC may not read it. "
+                               "Rename it without spaces.", "")
         if len(mains) > 1:
             add("info", f"{len(mains)} main .cas files ({', '.join(mains[:5])}): they run one "
                         "after another, each on all cores.", "")
@@ -616,6 +730,10 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
 
     if fam == "xbeach" and not os.path.exists(os.path.join(folder, "params.txt")):
         add("error", "XBeach needs params.txt at the root of the case folder.", "")
+    if fam == "xbeach" and info.get("nonhydrostatic"):
+        add("info", "Non-hydrostatic case (wavemodel = nonh): XBeach runs on ONE MPI process "
+                    "on cloudHPC (more processes create spurious waves at the subdomain "
+                    "boundaries). Select 2 vCPU.", "")
 
     if fam == "custom":
         py = [f for f in info.get("scripts", []) if f.endswith(".py")]
@@ -634,7 +752,8 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                 add("error", f"Participant '{p}' has no supported folder (OpenFOAM: "
                              "system/controlDict + system/preciceDict with 'participant "
                              f"{p};'; CalculiX: config.yml + .inp with *STEP; code_aster: "
-                             ".export + .comm using precice_aster).", "")
+                             ".export + .comm using precice_aster; FDS: one .fds with "
+                             f"&PRCI PARTICIPANT='{p}').", "")
             elif len(got) > 1:
                 add("error", f"Participant '{p}' is provided by several folders ({', '.join(got)}): "
                              "keep only the one to run.", "")
@@ -649,6 +768,60 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
                 inps = glob.glob(os.path.join(path, "*.inp"))
                 if not any(re.search(r"^\*STEP", _read_text(i), re.M | re.I) for i in inps):
                     add("error", f"{d}: no .inp file with *STEP.", "")
+        max_time = pc.get("max_time")
+        for d, f in (pc.get("fds") or {}).items():
+            if f.get("several"):
+                add("error", f"{d}: several .fds files with a &PRCI line "
+                             f"({', '.join(f['several'])}): keep only the one to run.", "")
+                continue
+            if pc.get("implicit"):
+                add("error", f"{d}: the FDS adapter supports explicit coupling only "
+                             "(serial-explicit or parallel-explicit); precice-config.xml uses "
+                             "an implicit scheme.", "")
+            if f.get("mult_id"):
+                add("error", f"{d}: {f['file']} uses MULT_ID on &MESH: write one explicit &MESH "
+                             "line per mesh (one MPI process each).", "")
+            if not f.get("meshes"):
+                add("error", f"{d}: no &MESH line in {f['file']}.", "")
+            cf = os.path.normpath(os.path.join(d, f.get("config_file") or "precice-config.xml"))
+            if cf != "precice-config.xml":
+                add("error", f"{d}: CONFIG_FILE='{f.get('config_file')}' on &PRCI does not point to "
+                             "precice-config.xml in the case folder: use "
+                             "CONFIG_FILE='../precice-config.xml'.", "")
+            t_end = f.get("t_end")
+            if max_time is not None and t_end is not None:
+                if t_end < max_time:
+                    add("warning", f"{d}: T_END {t_end:g} is lower than max-time {max_time:g} of "
+                                   "precice-config.xml: FDS ends first and the run is stopped as "
+                                   f"failed. Set T_END={max_time:g}.", "")
+                elif t_end > max_time:
+                    add("info", f"{d}: T_END {t_end:g} is higher than max-time {max_time:g}: FDS "
+                                "stops when the coupling ends.", "")
+        for d, kind in pc.get("solver_of_folder", {}).items():
+            if kind != "openfoam":
+                continue
+            fv = _read_text(os.path.join(folder, d, "system", "fvSolution"))
+            if _simple_residual(fv):
+                add("warning", f"{d}: SIMPLE in system/fvSolution has residualControl: OpenFOAM "
+                               "stops when converged, possibly before the coupling end time, and "
+                               "the run would then be stopped as failed. Remove residualControl "
+                               "to couple until the end.", "")
+            ctl = _strip_c(_read_text(os.path.join(folder, d, "system", "controlDict")))
+            m = re.search(r"^\s*endTime\s+([-+0-9.eE]+)\s*;", ctl, re.M)
+            try:
+                et = float(m.group(1)) if m else None
+            except ValueError:
+                et = None
+            if max_time is not None and et is not None and et < max_time:
+                add("warning", f"{d}: endTime {et:g} in system/controlDict is lower than max-time "
+                               f"{max_time:g} of precice-config.xml: this participant stops "
+                               "before the coupling ends.", "")
+            if pc.get("implicit"):
+                bad = _final_reltol(fv)
+                if bad:
+                    add("warning", f"{d}: implicit coupling with relTol > 0 on the final solvers "
+                                   f"({', '.join(bad)}): the coupling iterations may never "
+                                   "converge. Use relTol 0 on the *Final solvers.", "")
         if pc.get("unnamed_code_aster"):
             add("error", "Cannot tell which participant the code_aster folder(s) "
                          f"{', '.join(pc['unnamed_code_aster'])} provide: add "
@@ -724,6 +897,43 @@ def preflight(info: dict[str, Any]) -> list[dict[str, str]]:
     if fam == "dualsphysics" and info.get("user_scripts"):
         add("info", "Shell scripts (e.g. xCase*.sh) are not executed: put solver parameters in "
                     "<execution><parameters> of the _Def.xml.", "")
+
+    if fam == "phasicflow":
+        from .advisor import _PFP_SOLVERS
+        for c in info.get("phasicflow_cases", []):
+            where = "" if c["folder"] == "." else f"{c['folder']}: "
+            if not c["coupling"]:
+                add("error", f"{where}constant/couplingProperties not found: PhasicFlowPlus runs "
+                             "coupled CFD-DEM cases only.", "")
+            if c["application"] not in _PFP_SOLVERS:
+                add("error", f"{where}application in system/controlDict is "
+                             f"'{c['application'] or 'missing'}': set one of "
+                             f"{', '.join(_PFP_SOLVERS)}.", "")
+            if not (c["mesh"] or c["block_mesh"] or len(c["msh"]) == 1):
+                add("error", f"{where}" + (f"several .msh files ({', '.join(c['msh'])}): keep one."
+                                           if c["msh"] else
+                                           "no mesh: provide constant/polyMesh, "
+                                           "system/blockMeshDict or one Fluent .msh file "
+                                           "(mesh scripts such as mesh/Allmesh are not run)."), "")
+            try:
+                cfd, dem = float(c["cfd_start"]), float(c["dem_start"])
+            except ValueError:
+                cfd = dem = None
+            if cfd is not None and cfd > dem:
+                try:
+                    if c["dem_end"] is not None and abs(float(c["dem_end"]) - cfd) > 1e-9:
+                        add("warning", f"{where}settings/settingsDict endTime ({c['dem_end']}) "
+                                       f"differs from controlDict startTime ({c['cfd_start']}): "
+                                       "the DEM-only stage should end where CFD-DEM starts.", "")
+                except ValueError:
+                    pass
+            tdir = os.path.join(folder, c["folder"], c["cfd_start"])
+            if not c["fluid_u"] and not glob.glob(os.path.join(tdir, "U*")):
+                add("error", f"{where}no initial fluid velocity U: put the initial fields in "
+                             f"FluidField/ or in the {c['cfd_start']}/ folder.", "")
+            if c["user_scripts"]:
+                add("info", f"{where}{', '.join(c['user_scripts'])} are not executed: cloudHPC "
+                            "runs the solver steps itself.", "")
 
     if fam == "code_aster":
         nb = info.get("mpi_nbcpu")

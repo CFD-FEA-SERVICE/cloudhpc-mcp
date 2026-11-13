@@ -268,12 +268,23 @@ GUIDES: dict[str, dict[str, Any]] = {
     "xbeach": {
         "name": "XBeach (MPI)",
         "input": ["params.txt and the files it references (bathymetry, grids, wave boundary "
-                  "conditions) at the root of the case folder."],
-        "automatic": [],
-        "parallel": "MPI, one process per physical core: use highcore or hypercore.",
+                  "conditions) at the root of the case folder: without params.txt the run "
+                  "stops at once."],
+        "automatic": [
+            "Non-hydrostatic cases (wavemodel = nonh, or nonh = 1) run on ONE MPI process: "
+            "with more processes XBeach creates spurious waves at the subdomain boundaries "
+            "(verified on cloudHPC). Select 2 vCPU for these cases: more cores stay idle.",
+            "An XBerror.txt left by a previous run is removed before start.",
+            "The run is marked failed if XBeach writes XBerror.txt, reports 'Terminating "
+            "simulation', or does not reach 'End of program xbeach', even when its exit code "
+            "is 0.",
+        ],
+        "parallel": "MPI, one process per physical core (surfbeat and other hydrostatic "
+                    "models): use highcore or hypercore. Non-hydrostatic: one process.",
         "resources": "Start with 8 vCPU; the domain is split along the grid, so very small "
-                     "grids do not benefit from many cores.",
-        "logs": ["xbeach.log", "XBlog.txt", "XBerror.txt"],
+                     "grids do not benefit from many cores. wavemodel = nonh: 2 vCPU.",
+        "logs": ["xbeach.log (one '===== date : command' header per run)", "XBlog.txt",
+                 "XBerror.txt (printed in the simulation output when present)"],
         "docs": "https://xbeach.readthedocs.io",
     },
     "custom": {
@@ -301,8 +312,9 @@ GUIDES: dict[str, dict[str, Any]] = {
         "input": [
             "Radioss format: a starter file *_0000.rad and one or more engine files "
             "*_0001.rad, *_0002.rad ... (the engine files are run one after the other), or",
-            "LS-DYNA format: a .key file (a file named *OpenRadioss.key is preferred if "
-            "there are several).",
+            "LS-DYNA format: a .key file (with several, a file named *OpenCourant.key is "
+            "preferred - *OpenRadioss.key on the OpenRadioss versions - otherwise the first in "
+            "alphabetical order).",
             "If both a .key and a *_0000.rad are present, the .key file is used.",
         ],
         "automatic": [
@@ -316,7 +328,8 @@ GUIDES: dict[str, dict[str, Any]] = {
         "restart": [
             "A <root>_<run>.ctl file in the folder (written by a soft stop or by a live "
             "update) ends the engine sequence: the engine files after it are not run. "
-            "Delete leftover .ctl files before relaunching the case.",
+            "OpenCourant removes leftover .ctl files when a run starts, so a relaunch runs the "
+            "whole sequence again (with OpenRadioss versions delete them yourself).",
         ],
         "logs": ["OpenCourantSTARTER.log and OpenCourantENGINE_<file>.log (OpenCourant)",
                  "OpenRadiossSTARTER.log and OpenRadiossENGINE_<file>.log (OpenRadioss)"],
@@ -424,8 +437,9 @@ GUIDES: dict[str, dict[str, Any]] = {
             "The number of parallel partitions (ncsize) is set to the number of physical cores.",
             "Several main .cas files are run one after another, each on all cores; completed "
             "ones are skipped when the run is resumed.",
-            "A run is marked failed if TELEMAC stops with an error (TelemacException), even "
-            "when its exit code is 0.",
+            "A run is marked failed if TELEMAC stops with an error (TelemacException or a "
+            "Python traceback), even when its exit code is 0.",
+            "Avoid spaces in .cas file names: TELEMAC may not read them.",
         ],
         "parallel": "MPI, one process per physical core: use highcore or hypercore.",
         "resources": "Keep several thousand mesh nodes per core; very small meshes do not "
@@ -512,7 +526,7 @@ GUIDES: dict[str, dict[str, Any]] = {
         "docs": "https://kratosmultiphysics.github.io/Kratos/",
     },
     "precice": {
-        "name": "preCICE 3.3.1 (coupled FSI / CHT simulations with OpenFOAM, CalculiX and code_aster participants)",
+        "name": "preCICE 3.3.1 (coupled FSI / CHT simulations with OpenFOAM, CalculiX, code_aster and FDS participants)",
         "input": [
             "precice-config.xml at the root of the case folder.",
             "One subfolder per participant, as in the preCICE tutorials. OpenFOAM participant: "
@@ -523,13 +537,22 @@ GUIDES: dict[str, dict[str, Any]] = {
             "line) and a .comm that uses the precice_aster adapter; give the participant name "
             "with participant=\"<name>\" in the run_fsi / run_cht call of the .comm (it can be "
             "omitted only when code_aster is the one participant left without a folder). "
-            "Coupled runs always use code_aster 17.3.17: write the .comm for that version.",
+            "Coupled runs always use code_aster 17.3.17: write the .comm for that version. "
+            "FDS participant (fds-precice adapter): a folder with ONE .fds file containing the "
+            "&PRCI line; the participant name is PARTICIPANT='...' on &PRCI (default 'Fluid') "
+            "and CONFIG_FILE must point to the case's precice-config.xml "
+            "(CONFIG_FILE='../precice-config.xml'; the adapter default, a file in the FDS "
+            "folder, is refused).",
+            "FDS participants: explicit coupling only (serial-explicit or parallel-explicit); "
+            "one explicit &MESH line per mesh (MULT_ID on &MESH is refused); set T_END equal "
+            "to max-time of precice-config.xml (lower: FDS ends early and the run is stopped; "
+            "higher: FDS stops at max-time).",
             "Each participant of precice-config.xml needs exactly ONE folder. The tutorials "
             "often ship alternatives for the same participant (e.g. solid-calculix and "
             "solid-openfoam): keep only the one to run, otherwise the run stops. Folders whose "
             "participant is not in precice-config.xml are ignored.",
-            "Supported participants: OpenFOAM, CalculiX and code_aster; folders that contain "
-            "only a run.sh (other solvers) are ignored.",
+            "Supported participants: OpenFOAM, CalculiX, code_aster and FDS; folders that "
+            "contain only a run.sh (other solvers) are ignored.",
             "Paths in precice-config.xml and in the adapters (e.g. exchange-directory) should "
             "be relative, as in the tutorials.",
         ],
@@ -546,22 +569,46 @@ GUIDES: dict[str, dict[str, Any]] = {
             "or kahip are replaced by scotch; decomposeParDict is created if missing), run in "
             "parallel and reconstructed at the end.",
             "CalculiX participants: the first .inp file containing *STEP is run with the "
-            "participant name.",
+            "participant name; the linear equation solver runs on one thread (multi-threaded "
+            "SPOOLES gave wrong coupled results), assembly and stresses on all the "
+            "participant's threads.",
             "code_aster participants: the .export with the 'F comm' line is run with one MPI "
             "process (the adapter is serial) and its thread count (P ncpus) is set "
             "automatically; P mpi_nbcpu is set to 1. code_aster runs in a temporary folder, "
-            "so when it takes part the exchange-directory in precice-config.xml is made "
-            "absolute automatically (the file in the case folder is updated).",
+            "so when it takes part the relative exchange-directory values of "
+            "precice-config.xml are made absolute for the run only: the file in the case "
+            "folder is restored when the run ends (also on error or stop).",
+            "FDS participants: one MPI process per &MESH, one thread each.",
+            "Before start, warnings for: residualControl in the SIMPLE block of an OpenFOAM "
+            "participant (it stops when converged, before the coupling ends), OpenFOAM endTime "
+            "or FDS T_END lower than max-time, and relTol > 0 on the *Final solvers with "
+            "implicit coupling (solver noise prevents coupling convergence; use relTol 0).",
+            "Watchdog while running: a participant that exits before the coupling is complete "
+            "stops the others at once; when one solver has finished and another is still "
+            "in its solver after 10 minutes, that one is stopped (it waits for data that will "
+            "never arrive); a participant that printed a fatal error but does not exit is "
+            "stopped after 2 minutes; a run where no participant writes to its log for 60 "
+            "minutes is stopped as hung. In all these cases the run is marked failed and the "
+            "results written so far are kept.",
+            "Implicit coupling: a warning when at least half of the first 20 time windows "
+            "reach max-iterations without converging, and a summary of the converged windows "
+            "at the end (from precice-*-iterations.log).",
+            "The simulation output is condensed (one preCICE line per time window, repeated "
+            "MPI lines and iteration detail removed); log.<participant> stays complete.",
             "Exchange folders (precice-run) left by a previous run are removed before start.",
         ],
-        "parallel": "The physical cores are split among the participants: each CalculiX or "
-                    "code_aster participant gets an equal share as threads, at most 8 when "
-                    "OpenFOAM participants are present (they scale little beyond); the remaining "
-                    "cores are split equally among the OpenFOAM participants (one MPI process "
-                    "per core). The split is printed at the start of the log.",
+        "parallel": "The physical cores are split among the participants: each FDS participant "
+                    "takes one process per &MESH first; each CalculiX or code_aster participant "
+                    "gets an equal share of the rest as threads, at most 8 when OpenFOAM "
+                    "participants are present (they scale little beyond); the remaining cores "
+                    "are split equally among the OpenFOAM participants (one MPI process per "
+                    "core). The split is printed at the start of the log. With FDS select at "
+                    "least (FDS meshes + other participants) physical cores, otherwise they "
+                    "share cores and run slower.",
         "resources": "Use highcore or hypercore (physical cores). Tutorials run fine on 4-8 "
                      "vCPU; size larger cases on the OpenFOAM mesh (~50,000-100,000 cells per "
-                     "core) plus up to 8 cores per CalculiX or code_aster participant.",
+                     "core) plus up to 8 cores per CalculiX or code_aster participant and one "
+                     "core per FDS mesh.",
         "restart": [
             "Coupled runs cannot be resumed (preCICE writes no checkpoint): relaunching an "
             "incomplete run starts it from the beginning. A completed run is not run again "
@@ -569,7 +616,8 @@ GUIDES: dict[str, dict[str, Any]] = {
         ],
         "logs": ["log.<participant> in each participant folder",
                  "OpenFOAM steps: log.blockMesh, log.snappyHexMesh, log.decomposePar, "
-                 "log.reconstructPar", "simulation output lines are prefixed with [participant]"],
+                 "log.reconstructPar", "precice-*-iterations.log (implicit coupling)",
+                 "simulation output lines are prefixed with [participant]"],
         "docs": "https://precice.org/docs.html",
     },
     "lammps": {
@@ -727,6 +775,57 @@ GUIDES: dict[str, dict[str, Any]] = {
                  "<name>_out/log.PartVTK, log.FloatingInfo"],
         "docs": "https://dual.sphysics.org",
     },
+    "phasicflow": {
+        "name": "PhasicFlowPlus 1.0 (coupled CFD-DEM: OpenFOAM v2412 + PhasicFlow 1.0, DEM on GPU)",
+        "input": [
+            "A case = system/controlDict + constant/couplingProperties + settings/settingsDict "
+            "(plus caseSetup/ and the other PhasicFlow / OpenFOAM files of the tutorials), in "
+            "the folder itself or in first-level subfolders (several cases).",
+            "application in system/controlDict must be one of unresolvedSpherePFPlus, "
+            "unresolvedGrainPFPlus, resolvedSpherePFPlus, resolvedSphereVoFPFPlus.",
+            "Mesh: constant/polyMesh, or system/blockMeshDict, or ONE Fluent .msh file "
+            "(converted automatically). mesh/Allmesh and other mesh scripts are not run.",
+            "Initial fluid fields: in FluidField/ (or Fluid/, fluid/), copied into the time "
+            "folder where CFD-DEM starts without overwriting files already there, or directly "
+            "in that time folder. The field U is required.",
+            "The tutorials' Allrun / runThisCase scripts are NOT executed: the steps below are "
+            "run directly, so put every setting in the case files.",
+            "Coupled CFD-DEM cases only (constant/couplingProperties required).",
+        ],
+        "automatic": [
+            "Steps for each case: mesh (if constant/polyMesh is missing), DEM particles and "
+            "geometry (particlesPhasicFlow, geometryPhasicFlow), DEM-only settling stage when "
+            "startTime of system/controlDict is later than startTime of settings/settingsDict "
+            "(sphereGranFlow, or grainGranFlow for the Grain solvers; set settingsDict endTime "
+            "equal to controlDict startTime), fluid fields copy, CFD-DEM solver, particle VTK "
+            "files (pFlowToVTK) and foam.foam for ParaView.",
+            "MPI processes for the CFD part: the physical cores, limited to one process per "
+            "10,000 cells (small meshes run on fewer processes); the case is decomposed "
+            "(scotch), run in parallel and reconstructed automatically. The DEM runs on the "
+            "GPU.",
+            "Several cases: one after the other on a 1-GPU instance; with more GPUs one case "
+            "per GPU in parallel, cores split among them.",
+            "A run is marked failed on a non-zero exit code, a fatal error in the log (FOAM "
+            "FATAL, CUDA/Kokkos errors, segmentation fault) or a missing final 'End' line.",
+        ],
+        "parallel": "GPU (DEM, CUDA) + MPI for the CFD (one process per physical core, at least "
+                    "10,000 cells each).",
+        "resources": "A GPU instance is REQUIRED (the run stops at once without an NVIDIA GPU). "
+                     "4-8 vCPU are enough for the tutorials; more cores help only with large "
+                     "fluid meshes.",
+        "restart": [
+            "Steps already completed (mesh, DEM init, DEM-only stage, post-processing) are "
+            "skipped when relaunched in the same storage folder, and completed cases are not "
+            "run again. An interrupted CFD-DEM stage restarts from startTime: there is no "
+            "restart for the coupled DEM state.",
+        ],
+        "logs": ["log.<solver> (CFD-DEM) in each case folder",
+                 "log.blockMesh / log.fluent3DMeshToFoam, log.particlesPhasicFlow, "
+                 "log.geometryPhasicFlow, log.sphereGranFlow / log.grainGranFlow, "
+                 "log.decomposePar, log.reconstructPar, log.pFlowToVTK"],
+        "outputs": "OpenFOAM time folders, VTK/ particle files and foam.foam in each case folder.",
+        "docs": "https://github.com/PhasicFlow/PhasicFlowPlus",
+    },
 }
 
 # script-name prefixes (lower case) -> guide key, for families not in advisor
@@ -754,18 +853,28 @@ EXTRA_FAMILIES = {
     "tflows": "tflows",
     "dualsphysics": "dualsphysics",
     "kratos": "kratos",
+    "phasicflow": "phasicflow",
 }
 
 
 # vCPU vs physical cores: the most common source of "wrong number of processes"
-CORES_RULE = (
-    "Physical cores = vCPU on highcore/hypercore, but vCPU / 2 on the hyperthreaded types "
-    "(highcpu, standard, highmem, hypercpu). This solver runs one MPI process per PHYSICAL "
-    "core, so on a hyperthreaded type it uses half the vCPU selected. Example: 32 vCPU on "
-    "standard = 16 physical cores = 16 MPI processes (numberOfSubdomains is set to 16); 32 vCPU "
-    "on highcore or hypercore = 32 processes. To run N processes select N vCPU on highcore or "
-    "hypercore."
-)
+_DECOMP_SETTING = {"openfoam": "numberOfSubdomains is set to 16",
+                   "dafoam": "numberOfSubdomains is set to 16",
+                   "telemac": "ncsize is set to 16"}
+
+
+def cores_rule(family: str) -> str:
+    """vCPU vs physical cores, with the solver's own name for the process count."""
+    setting = _DECOMP_SETTING.get(family, "the run uses 16 processes")
+    return ("Physical cores = vCPU on highcore/hypercore, but vCPU / 2 on the hyperthreaded "
+            "types (highcpu, standard, highmem, hypercpu). This solver runs one MPI process "
+            "per PHYSICAL core, so on a hyperthreaded type it uses half the vCPU selected. "
+            f"Example: 32 vCPU on standard = 16 physical cores = 16 MPI processes ({setting}); "
+            "32 vCPU on highcore or hypercore = 32 processes. To run N processes select N vCPU "
+            "on highcore or hypercore.")
+
+
+CORES_RULE = cores_rule("openfoam")
 PHYSICAL_CORE_FAMILIES = {"openfoam", "dafoam", "su2", "codesaturne", "xbeach", "telemac",
                           "liggghts", "precice", "lammps", "palabos", "freefem", "tflows"}
 
@@ -792,7 +901,7 @@ def guide_for(family: str) -> dict[str, Any] | None:
         return None
     g = dict(g)
     if family in PHYSICAL_CORE_FAMILIES:
-        g["cores"] = CORES_RULE
+        g["cores"] = cores_rule(family)
     if family in FAQ:
         g["faq"] = FAQ[family]
     from .live import describe

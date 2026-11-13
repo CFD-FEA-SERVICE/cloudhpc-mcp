@@ -1447,3 +1447,78 @@ def test_telemac_guide_diagnosis_and_resources(tmp_path):
     assert "other.cas" in msgs and "TELEMAC-3D" in msgs      # unprefixed, no 3D keywords
     assert "tom_waves.cas" not in msgs.split("main .cas files")[-1]
     assert "only the first" not in msgs
+
+
+def test_telemac_exception_matched_line_and_cores_wording():
+    from cloudhpc_mcp import errors
+    log = ('Traceback (most recent call last):\n'
+           '    raise TelemacException(\n'
+           'utils.exceptions.TelemacException: Could not split your file T3DGEO\n')
+    d = {x["id"]: x for x in errors.diagnose(log)}
+    assert d["telemac_exception"]["matched"].endswith("Could not split your file T3DGEO")
+    assert "lines just above the traceback" in d["telemac_exception"]["fix"]
+    d = {x["id"]: x for x in errors.diagnose("    raise TelemacException(\n")}
+    assert d["telemac_exception"]["matched"] == "raise TelemacException("   # fallback
+    assert "ncsize is set to 16" in guides.guide_for("telemac")["cores"]
+    assert "numberOfSubdomains" not in guides.guide_for("telemac")["cores"]
+    assert "numberOfSubdomains is set to 16" in guides.guide_for("openfoam")["cores"]
+
+
+def test_phasicflow_family_guide_preflight(tmp_path):
+    from cloudhpc_mcp import advisor, errors, guides
+    assert advisor.family_of("PhasicFlowPlus-v1.0") == "phasicflow"
+    assert guides.guide_for("phasicflow")["name"].startswith("PhasicFlowPlus")
+    d = _case(tmp_path, "pfp", {"system/controlDict": "application icoFoam;\nstartTime 1;\n",
+            "system/blockMeshDict": "x", "settings/settingsDict": "startTime 0;\nendTime 0.5;\n",
+            "Allrun": "x"})
+    info = advisor.inspect_case(str(d))
+    assert info["family"] == "phasicflow"
+    msgs = " ".join(i["issue"] for i in errors.preflight(info))
+    assert "couplingProperties" in msgs and "icoFoam" in msgs and "endTime (0.5)" in msgs
+    assert "velocity U" in msgs and "Allrun" in msgs
+    r = advisor.suggest("phasicflow", [2, 4, 8, 16], ["highcpu", "basegpu"])
+    assert r["ram"] == "basegpu"
+    assert "error" in advisor.suggest("phasicflow", [4], ["highcpu"])
+    assert {x["id"] for x in errors.diagnose("@@@ ERROR: No NVIDIA GPU found. This")} == {"pfp_gpu"}
+
+
+def test_xbeach_nonh(tmp_path):
+    from cloudhpc_mcp import advisor, errors
+    d = _case(tmp_path, "xb", {"params.txt": "wavemodel = nonh  % comment\nnx = 100\n"})
+    info = advisor.inspect_case(str(d))
+    assert info["nonhydrostatic"]
+    assert any("ONE MPI process" in i["issue"] for i in errors.preflight(info))
+    r = advisor.suggest("xbeach", [2, 4, 8], ["highcpu", "standard", "highcore"], case_info=info)
+    assert r["cpu"] == 2
+    assert "xbeach_error" in {x["id"] for x in errors.diagnose(
+        "@@@ ERROR: XBeach did not reach 'End of program xbeach' (exit code 0)")}
+
+
+def test_precice_fds_participant(tmp_path):
+    from cloudhpc_mcp import advisor, errors, guides
+    cfg = ('<participant name="Fluid"/><participant name="Solid"/>'
+           '<max-time value="60"/><coupling-scheme:parallel-explicit>')
+    d = _case(tmp_path, "pf", {"precice-config.xml": cfg,
+            "fire/room.fds": "&HEAD CHID='room'/\n&TIME T_END=30./\n&MESH IJK=10,10,10/\n"
+                             "&MESH IJK=10,10,10/\n&PRCI PARTICIPANT='Fluid', CONFIG_FILE='../precice-config.xml'/\n",
+            "solid/config.yml": "participants:\n  Solid:\n", "solid/s.inp": "*STEP\n"})
+    info = advisor.inspect_case(str(d))
+    pc = info["precice"]
+    assert pc["folders"]["Fluid"] == ["fire"] and pc["fds"]["fire"]["meshes"] == 2
+    msgs = " ".join(i["issue"] for i in errors.preflight(info))
+    assert "T_END 30 is lower than max-time 60" in msgs and "CONFIG_FILE" not in msgs
+    r = advisor.suggest("precice", [2, 4, 8, 16], ["highcore", "hypercore"], case_info=info)
+    assert r["cpu"] >= 4
+    assert "FDS" in guides.guide_for("precice")["name"]
+    assert "precice_early_exit" in {x["id"] for x in errors.diagnose(
+        "@@@ ERROR: [Fluid] Fluid stopped before the end of the coupling (\"The solver exited "
+        "before the coupling was complete\")")}
+
+
+def test_precice_openfoam_checks():
+    from cloudhpc_mcp import errors
+    fv = ("solvers { p { relTol 0.01; } pFinal { $p; relTol 0; } UFinal { relTol 0.1; } }\n"
+          "SIMPLE { residualControl { p 1e-4; } }")
+    assert errors._simple_residual(fv)
+    assert errors._final_reltol(fv) == ["UFinal relTol 0.1"]
+    assert not errors._simple_residual("PIMPLE { residualControl { p 1e-4; } }")
